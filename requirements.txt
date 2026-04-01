@@ -1,0 +1,7 @@
+newspaper3k
+pika
+transformers
+torch
+streamlit
+pandas
+flask
