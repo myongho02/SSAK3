@@ -61,8 +61,11 @@ def get_results():
         rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify(rows)
-    except:
-        return jsonify([])
+    except Exception as e:
+        # DB 파일이 없거나 테이블이 아직 생성되지 않은 경우
+        # Worker가 첫 분석을 완료하기 전에 조회하면 여기로 옴
+        print(f"[API] 결과 조회 실패: {e}")
+        return jsonify({"error": f"결과 조회 실패: {str(e)}"}), 500
 
 @app.route('/results/<int:result_id>', methods=['GET'])
 def get_result(result_id):
@@ -77,8 +80,10 @@ def get_result(result_id):
         if row:
             return jsonify(dict(row))
         return jsonify({"error": "결과를 찾을 수 없습니다"}), 404
-    except:
-        return jsonify({"error": "DB 조회 실패"}), 500
+    except Exception as e:
+        # 존재하지 않는 ID 조회 또는 DB 접근 오류
+        print(f"[API] 결과 조회 실패 (id={result_id}): {e}")
+        return jsonify({"error": f"DB 조회 실패: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=True)

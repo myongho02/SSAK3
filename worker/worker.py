@@ -30,8 +30,18 @@ DB_PATH = "/app/data/results.db"
 def init_db():
     """결과 저장용 테이블 만들기 (없으면 새로 생성)"""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    # timeout=30: 다른 Worker가 DB를 잠그고 있을 때 최대 30초까지 대기
+    # SQLite는 파일 기반 DB라서 동시에 1개만 쓰기 가능 → timeout으로 대기
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
+
+    # WAL(Write-Ahead Logging) 모드 활성화
+    # 기본 모드(DELETE)는 쓰기 시 DB 전체를 잠그지만,
+    # WAL 모드는 읽기와 쓰기를 동시에 허용하여 Worker 여러 개가 경합할 때 성능 향상
+    cursor.execute("PRAGMA journal_mode=WAL")
+
+    # status 컬럼: 분석 성공('done') / 크롤링 실패('failed') 등 처리 상태 기록
+    # 기본값 'done'으로 설정하여 기존 데이터와 호환 유지
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS analysis_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,6 +53,7 @@ def init_db():
             source_score REAL,
             total_score REAL,
             grade TEXT,
+            status TEXT DEFAULT 'done',
             analyzed_at TEXT
         )
     ''')
@@ -52,10 +63,12 @@ def init_db():
 # ========== 뉴스 크롤링 ==========
 
 def crawl_naver_news(url):
-    """네이버 뉴스 전용 크롤러 — BS4로 기사 본문 직접 파싱
+    """네이버 뉴스 전용 크롤러 — BS4로 기사 본문 + 원본 언론사명 추출
+
     newspaper3k는 네이버 뉴스의 JS 렌더링 본문을 못 가져오므로,
-    requests + BeautifulSoup으로 #dic_area에서 본문을 직접 추출한다.
-    모바일/PC URL 모두 그대로 사용 가능.
+    requests + BeautifulSoup으로 직접 추출한다.
+
+    Returns: (제목, 본문, 원본 언론사명)
     """
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(url, headers=headers, timeout=10)
@@ -77,12 +90,30 @@ def crawl_naver_news(url):
     else:
         body = ""
 
-    return title, body
+    # ── 원본 언론사명 추출 ──
+    # 네이버 뉴스는 og:article:author 메타 태그에 "연합뉴스 | 네이버" 형식으로 저장
+    # " | 네이버" 부분을 제거하면 원본 언론사명을 얻을 수 있음
+    source_name = ""
+    author_tag = soup.find("meta", property="og:article:author")
+    if author_tag:
+        # "연합뉴스 | 네이버" → "연합뉴스"
+        source_name = author_tag.get("content", "").split("|")[0].strip()
+
+    # og:article:author가 없으면 언론사 로고의 alt 텍스트에서 추출
+    if not source_name:
+        logo_tag = soup.select_one(".media_end_head_top_logo img")
+        if logo_tag:
+            source_name = logo_tag.get("alt", "").strip()
+
+    return title, body, source_name
 
 def crawl_article(url):
     """URL에 따라 적절한 크롤러를 선택하여 기사를 가져온다.
-    - 네이버 뉴스: BS4 직접 파싱 (JS 렌더링 우회)
-    - 기타 사이트: newspaper3k 범용 크롤러 사용
+
+    - 네이버 뉴스: BS4 직접 파싱 (JS 렌더링 우회) + 원본 언론사명 추출
+    - 기타 사이트: newspaper3k 범용 크롤러 사용 + URL에서 도메인 추출
+
+    Returns: (제목, 본문, 원본 언론사명)
     """
     if "news.naver.com" in url:
         return crawl_naver_news(url)
@@ -91,20 +122,114 @@ def crawl_article(url):
     article = Article(url, language='ko')
     article.download()
     article.parse()
-    return article.title, article.text
+    # newspaper3k의 source_url에서 도메인명을 언론사명으로 사용
+    # 예: "https://www.hani.co.kr/..." → "hani.co.kr"
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc.replace("www.", "")
+    return article.title, article.text, domain
 
 # ========== 신뢰도 분석 함수들 ==========
 
+def extract_lead_sentences(body, n=3):
+    """본문에서 첫 N문장(리드)을 추출한다.
+    뉴스 기사는 역피라미드 구조로, 첫 1~3문장에 핵심 내용이 집중되어 있다.
+    마침표(.), 느낌표(!), 물음표(?) 기준으로 문장을 분리한다.
+    """
+    # 마침표/느낌표/물음표 뒤에 공백 또는 줄바꿈이 오는 지점에서 분리
+    sentences = re.split(r'(?<=[.!?])\s+', body.strip())
+    # 빈 문장 제거 후 첫 N문장 반환
+    sentences = [s for s in sentences if len(s.strip()) > 5]
+    return ' '.join(sentences[:n])
+
+def extract_title_keywords(title):
+    """제목에서 핵심 명사(키워드)를 추출한다.
+    한국어 형태소 분석기 없이도 동작하도록, 다음 규칙을 적용한다:
+    1. 조사/어미/기호 등 불용어 패턴을 제거
+    2. 2글자 이상의 단어만 키워드로 인정
+    3. 숫자+단위 조합(200억원 등)도 키워드로 포함
+    """
+    # 괄호, 특수기호 제거: [속보], (종합), 「」 등
+    cleaned = re.sub(r'[\[\]()「」『』【】<>]', ' ', title)
+    # 공백 기준으로 토큰 분리
+    tokens = cleaned.split()
+
+    # 한국어 불용어 (조사, 접속사, 관형사 등) — 단독으로 쓰이는 것만
+    stopwords = {
+        '의', '가', '이', '은', '는', '을', '를', '에', '에서', '와', '과',
+        '도', '로', '으로', '만', '까지', '부터', '에게', '한', '할', '하는',
+        '된', '되는', '및', '등', '더', '그', '이', '저', '것', '수', '때',
+        '위해', '대한', '통해', '위한', '관련', '대해', '또는', '하지만',
+    }
+
+    keywords = []
+    for token in tokens:
+        # 끝에 붙은 조사 패턴 제거: "정부는" → "정부", "경제를" → "경제"
+        # 1~2글자 조사가 끝에 붙어있으면 떼어냄
+        word = re.sub(r'(은|는|이|가|을|를|의|에|와|과|로|도|만|까지|부터|에서|에게|으로|이다|했다|한다|된다|되는|하는|에는)$', '', token)
+        # 2글자 이상이고 불용어가 아닌 단어만 키워드로 인정
+        if len(word) >= 2 and word not in stopwords:
+            keywords.append(word)
+
+    return keywords
+
 def analyze_content_similarity(title, body):
-    """지표 1: 본문 일치도 (45%) — TF-IDF 코사인 유사도로 제목-본문 일치도 측정
+    """지표 1: 본문 일치도 (45%) — 코사인 유사도 + 키워드 매칭 결합
+
+    [개선된 분석 방법]
+    1. 코사인 유사도 (50%): 제목과 본문 첫 3문장(리드)만 비교
+       - 기존: 제목 vs 본문 전체 → 길이 차이로 유사도 0.05 이하
+       - 개선: 제목 vs 리드 3문장 → 핵심 내용끼리 비교하여 유사도 상승
+    2. 키워드 매칭 (50%): 제목의 핵심 명사가 본문에 등장하는 비율
+       - 제목에서 핵심 명사를 추출 (조사 제거)
+       - 각 명사가 본문에 1번 이상 등장하면 매칭 성공
+       - 매칭률 = (매칭된 키워드 수 / 전체 키워드 수) × 100
+
     참고: Horne & Adali, "This Just In: Fake News Packs a Lot in Title" (AAAI, 2017)
     """
     if not title or not body:
         return 0.0
+
+    # ── 1단계: 코사인 유사도 (제목 vs 리드 3문장) ──
+    # 본문 전체가 아닌 첫 3문장만 추출하여 비교
+    # 뉴스 기사의 역피라미드 구조: 첫 문단에 핵심 내용 집중
+    lead = extract_lead_sentences(body, n=3)
+    if not lead:
+        lead = body[:200]  # 문장 분리 실패 시 앞 200자 사용
+
     vectorizer = TfidfVectorizer()
-    vectors = vectorizer.fit_transform([title, body])
-    similarity = cosine_similarity(vectors[0], vectors[1])[0][0]
-    return round(similarity * 100, 1)
+    vectors = vectorizer.fit_transform([title, lead])
+    cosine_score = cosine_similarity(vectors[0], vectors[1])[0][0]
+    # 0~1 범위를 0~100으로 스케일링
+    cosine_score_scaled = cosine_score * 100
+
+    # ── 2단계: 키워드 매칭 (제목 핵심 명사 → 본문 등장 여부) ──
+    # 제목에서 핵심 명사를 추출하고, 각 명사가 본문에 등장하는지 확인
+    keywords = extract_title_keywords(title)
+
+    if not keywords:
+        # 키워드 추출 실패 시 코사인 유사도만 사용
+        return round(cosine_score_scaled, 1)
+
+    # 각 키워드가 본문에 1번 이상 등장하면 매칭 성공
+    matched = 0
+    for kw in keywords:
+        if kw in body:
+            matched += 1
+
+    # 매칭률: 매칭된 키워드 수 / 전체 키워드 수 (0.0 ~ 1.0)
+    match_ratio = matched / len(keywords)
+    # 0~1 범위를 0~100으로 스케일링
+    keyword_score = match_ratio * 100
+
+    # ── 3단계: 두 점수를 결합 ──
+    # 코사인 유사도(50%) + 키워드 매칭(50%)
+    # 코사인 유사도가 낮아도 키워드가 본문에 다 있으면 높은 점수
+    final_score = (cosine_score_scaled * 0.5) + (keyword_score * 0.5)
+
+    # 0~100 범위로 클리핑
+    final_score = max(0, min(100, final_score))
+
+    return round(final_score, 1)
 
 def analyze_ai_sentiment(text):
     """AI 감성분석 보조 지표 — HuggingFace KR-FinBert-SC 모델 사용
@@ -255,18 +380,56 @@ def analyze_provocative(title, body):
 
     return round(final_score, 1)
 
-def analyze_source(url):
-    """지표 3: 출처 신뢰도 (20%) — 언론사 신뢰도 + 등록 도메인 여부"""
-    # 주요 언론사 (높은 점수: 90점)
-    major_sources = [
-        'yonhapnews.co.kr', 'yna.co.kr',       # 연합뉴스
-        'kbs.co.kr', 'mbc.co.kr', 'sbs.co.kr',  # 지상파
-        'chosun.com', 'donga.com', 'hani.co.kr', # 종합일간지
+def analyze_source(url, source_name=""):
+    """지표 3: 출처 신뢰도 (20%) — 원본 언론사명 기반 신뢰도 판정
+
+    [개선된 분석 방법]
+    기존: URL의 도메인만 확인 → 네이버 뉴스는 전부 naver.com으로 65점 고정
+    개선: 크롤링 시 추출한 원본 언론사명(source_name)으로 판정
+          → "연합뉴스", "KBS" 등 실제 언론사를 구분하여 정확한 점수 부여
+
+    [판정 기준 — 3단계]
+    1. 주요 언론사 (85점): 통신사, 지상파, 종합일간지 등 공신력 있는 매체
+    2. 등록 인터넷 매체 (65점): 인터넷 신문, 경제지, 전문지 등 등록된 매체
+    3. 출처 불명 (35점): 언론사명을 확인할 수 없거나 미등록 매체
+
+    Args:
+        url: 기사 URL (언론사명 추출 실패 시 도메인 기반 폴백용)
+        source_name: 크롤링 시 추출한 원본 언론사명 (예: "연합뉴스", "KBS")
+    """
+
+    # ── 주요 언론사 목록 (85점) ──
+    # 통신사, 지상파 방송, 종합일간지 등 공신력이 검증된 매체
+    MAJOR_SOURCES = [
+        # 통신사
+        '연합뉴스', '연합뉴스TV',
+        # 지상파 방송
+        'KBS', 'MBC', 'SBS', 'KBS 뉴스', 'MBC 뉴스', 'SBS 뉴스',
+        # 종합일간지
+        '조선일보', '중앙일보', '동아일보',
+        '한겨레', '경향신문', '한국일보', '국민일보', '서울신문',
+        '세계일보', '문화일보',
+        # 종합편성채널
+        'JTBC', 'TV조선', '채널A', 'MBN',
+        # 통신사 영문명 (도메인 폴백 용)
+        'yonhapnews.co.kr', 'yna.co.kr',
+        'kbs.co.kr', 'mbc.co.kr', 'sbs.co.kr',
+        'chosun.com', 'donga.com', 'hani.co.kr',
         'joongang.co.kr', 'khan.co.kr',
     ]
-    # 등록 인터넷 매체 (중간 점수: 65점)
-    registered_sources = [
-        'naver.com', 'daum.net',                # 포털
+
+    # ── 등록 인터넷 매체 목록 (65점) ──
+    # 인터넷 신문, 경제 전문지, IT 전문지 등 등록된 매체
+    REGISTERED_SOURCES = [
+        # 인터넷 신문
+        '뉴시스', '뉴스1', '노컷뉴스', '오마이뉴스', '프레시안',
+        '미디어오늘', '팩트체크뉴스', '더팩트',
+        # 경제지
+        '매일경제', '한국경제', '서울경제', '머니투데이', '이데일리',
+        '파이낸셜뉴스', '아시아경제', '헤럴드경제',
+        # IT/전문지
+        'ZDNet', '전자신문', '디지털데일리', '블로터',
+        # 도메인 폴백 용
         'newsis.com', 'news1.kr', 'edaily.co.kr',
         'hankyung.com', 'mk.co.kr', 'mt.co.kr',
         'sedaily.com', 'heraldcorp.com',
@@ -274,13 +437,27 @@ def analyze_source(url):
         'zdnet.co.kr', 'etnews.com',
     ]
 
-    for source in major_sources:
-        if source in url:
-            return 90.0
-    for source in registered_sources:
-        if source in url:
+    # ── 1단계: 원본 언론사명으로 매칭 ──
+    # 크롤링 시 추출한 언론사명(예: "연합뉴스")과 목록을 비교
+    if source_name:
+        for name in MAJOR_SOURCES:
+            if name in source_name or source_name in name:
+                return 85.0
+        for name in REGISTERED_SOURCES:
+            if name in source_name or source_name in name:
+                return 65.0
+
+    # ── 2단계: 언론사명 매칭 실패 시 URL 도메인으로 폴백 ──
+    # 네이버 외 사이트에서 크롤링했거나, 언론사명 추출이 안 된 경우
+    for name in MAJOR_SOURCES:
+        if name in url:
+            return 85.0
+    for name in REGISTERED_SOURCES:
+        if name in url:
             return 65.0
-    return 30.0  # 출처 불명
+
+    # ── 3단계: 출처 불명 ──
+    return 35.0
 
 def calculate_total_score(content, provocative, source):
     """종합 점수: 본문일치도(45%) + 자극성분석(35%) + 출처신뢰도(20%)"""
@@ -299,23 +476,70 @@ def get_grade(score):
         return "신뢰 낮음"
 
 def save_to_db(result):
-    """분석 결과를 SQLite에 저장"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO analysis_results
-        (url, title, body, content_score, provocative_score, source_score,
-         total_score, grade, analyzed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        result['url'], result['title'], result['body'][:500],
-        result['content'], result['provocative'], result['source'],
-        result['total'], result['grade'], result['analyzed_at']
-    ))
-    conn.commit()
-    conn.close()
+    """분석 결과를 SQLite에 저장 (동시 쓰기 경합 대응)
+
+    Worker 여러 개가 동시에 INSERT하면 'database is locked' 에러가 발생할 수 있다.
+    이를 방지하기 위해:
+    1. timeout=30: 다른 Worker가 쓰기 중이면 최대 30초 대기
+    2. try-except: locked 에러 발생 시 3초 후 재시도 (최대 3회)
+    3. finally: 예외 발생 여부와 관계없이 DB 연결을 반드시 닫음
+    """
+    max_retries = 3  # 최대 재시도 횟수
+
+    for attempt in range(1, max_retries + 1):
+        conn = None
+        try:
+            # timeout=30: 잠금 대기 시간 (기본값 5초는 Worker 3개 이상에서 부족)
+            conn = sqlite3.connect(DB_PATH, timeout=30)
+            cursor = conn.cursor()
+            # status: 분석 성공('done') 또는 크롤링 실패('failed')
+            cursor.execute('''
+                INSERT INTO analysis_results
+                (url, title, body, content_score, provocative_score, source_score,
+                 total_score, grade, status, analyzed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                result['url'], result['title'], result['body'][:500],
+                result['content'], result['provocative'], result['source'],
+                result['total'], result['grade'], result.get('status', 'done'),
+                result['analyzed_at']
+            ))
+            conn.commit()
+            return  # 성공하면 함수 종료
+
+        except sqlite3.OperationalError as e:
+            # "database is locked" 에러: 다른 Worker가 쓰기 중
+            if "locked" in str(e) and attempt < max_retries:
+                print(f"[Worker] DB 잠금 감지, {attempt}/{max_retries} 재시도 (3초 후)")
+                time.sleep(3)
+            else:
+                # 3회 모두 실패하거나 다른 종류의 에러면 로그 출력
+                print(f"[Worker] DB 저장 실패: {e}")
+
+        finally:
+            # 예외 발생 여부와 관계없이 연결을 반드시 닫아 잠금 해제
+            if conn:
+                conn.close()
 
 # ========== 메인: 큐에서 기사 꺼내서 분석 ==========
+
+def is_already_analyzed(url):
+    """해당 URL이 이미 분석되었는지 DB에서 확인한다.
+    같은 기사를 중복 분석하면 DB에 동일한 결과가 쌓이고,
+    Worker 리소스(크롤링 + AI 모델 추론)가 낭비되므로 사전에 체크한다.
+
+    Returns: True면 이미 분석됨 → skip, False면 신규 → 분석 진행
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM analysis_results WHERE url = ?", (url,))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception:
+        # DB 조회 실패 시에는 안전하게 분석 진행 (중복보다 누락이 더 나쁨)
+        return False
 
 def process_message(ch, method, properties, body):
     """큐에서 메시지를 받으면 실행되는 함수"""
@@ -323,23 +547,47 @@ def process_message(ch, method, properties, body):
     url = data['url']
     print(f"[Worker] 분석 시작: {url}")
 
-    # newspaper3k로 실제 뉴스 크롤링
+    # ── 중복 분석 방지: 이미 분석된 URL이면 건너뛰기 ──
+    if is_already_analyzed(url):
+        print(f"[Worker] 이미 분석된 기사입니다 (skip): {url}")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        return
+
+    # 실제 뉴스 크롤링 — 제목, 본문, 원본 언론사명을 함께 추출
     try:
-        title, article_body = crawl_article(url)
+        title, article_body, source_name = crawl_article(url)
     except Exception as e:
+        # 크롤링 실패 시 status='failed'로 DB에 기록
+        # 사용자가 대시보드에서 실패 원인을 확인할 수 있도록 에러 메시지 저장
         print(f"[Worker] 크롤링 실패: {url} — {e}")
+        fail_result = {
+            'url': url, 'title': '크롤링 실패', 'body': str(e)[:500],
+            'content': 0, 'provocative': 0, 'source': 0,
+            'total': 0, 'grade': '분석 불가', 'status': 'failed',
+            'analyzed_at': time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        save_to_db(fail_result)
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
     if not article_body or len(article_body.strip()) < 50:
+        # 본문이 너무 짧으면 정상적인 분석이 불가능 → 실패 처리
         print(f"[Worker] 본문이 너무 짧거나 비어있음: {url}")
+        fail_result = {
+            'url': url, 'title': title or '본문 부족', 'body': article_body or '',
+            'content': 0, 'provocative': 0, 'source': 0,
+            'total': 0, 'grade': '분석 불가', 'status': 'failed',
+            'analyzed_at': time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        save_to_db(fail_result)
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
     # 3가지 지표 분석
     content = analyze_content_similarity(title, article_body)
     provocative = analyze_provocative(title, article_body)
-    source = analyze_source(url)
+    # 원본 언론사명(source_name)을 전달하여 정확한 출처 판정
+    source = analyze_source(url, source_name)
     total = calculate_total_score(content, provocative, source)
     grade = get_grade(total)
 
