@@ -9,19 +9,23 @@ app = Flask(__name__)
 DB_PATH = "/app/data/results.db"
 
 def send_to_queue(url):
-    """URL을 RabbitMQ 큐에 넣기"""
+    """URL을 RabbitMQ 큐에 넣기
+
+    RabbitMQ 연결 실패 시 예외를 호출자에게 전파하여
+    API가 적절한 에러 응답을 반환할 수 있도록 한다.
+    """
     connection = pika.BlockingConnection(
         pika.ConnectionParameters(host='rabbitmq')
     )
     channel = connection.channel()
     channel.queue_declare(queue='news_queue', durable=True)
-    
+
     message = json.dumps({
         "id": int(time.time()),
         "url": url,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     })
-    
+
     channel.basic_publish(
         exchange='',
         routing_key='news_queue',
@@ -70,11 +74,87 @@ def analyze():
         # Worker가 첫 실행 시 테이블을 생성하므로, 그 전에는 조회가 실패할 수 있음
         print(f"[API] 중복 체크 실패 (무시하고 큐 전달): {e}")
 
-    send_to_queue(url)
+    # ── RabbitMQ 큐에 URL 전달 ──
+    try:
+        send_to_queue(url)
+    except Exception as e:
+        print(f"[API] RabbitMQ 전송 실패: {e}")
+        return jsonify({"error": f"메시지 큐 전송 실패: {str(e)}"}), 503
 
     return jsonify({
         "message": "분석 요청 완료! Worker가 처리 중입니다.",
         "url": url
+    })
+
+@app.route('/analyze/bulk', methods=['POST'])
+def analyze_bulk():
+    """여러 URL을 한번에 받아 RabbitMQ 큐에 순서대로 넣기"""
+    data = request.get_json()
+
+    if not data or 'urls' not in data:
+        return jsonify({"error": "urls 리스트를 입력해주세요"}), 400
+
+    urls = data['urls']
+    if not isinstance(urls, list) or len(urls) == 0:
+        return jsonify({"error": "urls는 비어있지 않은 배열이어야 합니다"}), 400
+
+    # ── 중복이 아닌 URL만 큐에 전달 ──
+    queued_count = 0
+    skipped_count = 0
+
+    # DB 연결을 한 번만 열어 중복 체크 수행
+    existing_urls = set()
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT url FROM analysis_results")
+        existing_urls = {row[0] for row in cursor.fetchall()}
+        conn.close()
+    except Exception:
+        # 테이블 미생성 등의 경우 무시 — 전부 큐에 넣음
+        pass
+
+    # ── RabbitMQ 연결을 한 번만 열어 전체 URL을 순서대로 publish ──
+    try:
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(host='rabbitmq')
+        )
+    except Exception as e:
+        print(f"[API] RabbitMQ 연결 실패: {e}")
+        return jsonify({"error": f"메시지 큐 연결 실패: {str(e)}"}), 503
+
+    channel = connection.channel()
+    channel.queue_declare(queue='news_queue', durable=True)
+
+    for url in urls:
+        url = url.strip()
+        if not url or not url.startswith("http"):
+            continue
+
+        # 이미 분석된 URL은 건너뛰기
+        if url in existing_urls:
+            skipped_count += 1
+            continue
+
+        message = json.dumps({
+            "id": int(time.time() * 1000) + queued_count,  # 밀리초 + 순번으로 고유 ID
+            "url": url,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        })
+        channel.basic_publish(
+            exchange='',
+            routing_key='news_queue',
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        queued_count += 1
+
+    connection.close()
+
+    return jsonify({
+        "message": f"{queued_count}개 분석 요청 완료",
+        "count": queued_count,
+        "skipped": skipped_count
     })
 
 @app.route('/results', methods=['GET'])

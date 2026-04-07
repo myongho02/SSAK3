@@ -4,6 +4,7 @@ import pandas as pd
 import requests
 import os
 import json
+import time
 
 # ========== 기본 설정 ==========
 DB_PATH = "/app/data/results.db"
@@ -56,18 +57,18 @@ header {visibility: hidden;}
     margin-bottom: 6px; line-height: 1.5;
 }
 .article-card .card-meta { font-size: 13px; color: #94A3B8; margin-bottom: 16px; }
-.score-circle {
-    width: 100px; height: 100px; border-radius: 50%;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    color: #fff; font-weight: 700; margin: 0 auto;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+.gauge-wrap { text-align: center; }
+.gauge-wrap svg { display: block; margin: 0 auto; }
+.gauge-score { font-size: 30px; font-weight: 800; }
+.gauge-unit { font-size: 12px; fill: #94A3B8; }
+.gauge-grade {
+    display: inline-block; margin-top: 6px; padding: 3px 14px; border-radius: 20px;
+    font-size: 12px; font-weight: 700; color: #fff;
 }
-.score-circle .number { font-size: 28px; line-height: 1.1; }
-.score-circle .unit { font-size: 12px; font-weight: 400; opacity: 0.9; }
 .indicator-row { display: flex; align-items: center; margin: 8px 0; }
 .indicator-label { width: 150px; font-size: 13px; font-weight: 500; color: #475569; flex-shrink: 0; }
-.indicator-track { flex: 1; background: #F1F5F9; border-radius: 6px; height: 12px; overflow: hidden; }
-.indicator-fill { height: 100%; border-radius: 6px; transition: width 0.4s ease; }
+.indicator-track { flex: 1; background: #F1F5F9; border-radius: 8px; height: 14px; overflow: hidden; }
+.indicator-fill { height: 100%; border-radius: 8px; transition: width 0.5s ease; }
 .indicator-value {
     width: 50px; text-align: right; font-size: 13px; font-weight: 700;
     color: #334155; flex-shrink: 0; padding-left: 10px;
@@ -127,7 +128,7 @@ st.markdown("""<div style="background: linear-gradient(135deg, #0F1B2D 0%, #1E3A
 </div>""", unsafe_allow_html=True)
 
 # ================================================================
-# 사이드바 — 등급 필터 + 시스템 상태
+# 사이드바 — 페이지 네비게이션 + 필터 + 시스템 상태
 # ================================================================
 
 # ── 사이드바 로고/타이틀 ──
@@ -138,11 +139,36 @@ st.sidebar.markdown("""<div style="text-align:center; padding: 16px 0 8px 0;">
 </div>""", unsafe_allow_html=True)
 st.sidebar.markdown("---")
 
-# ── 등급 필터 (라디오 버튼) ──
+# ── 페이지 네비게이션 ──
+page_mode = st.sidebar.radio(
+    "페이지 선택",
+    ["📊 분석 대시보드", "🏎️ 성능 측정"],
+    label_visibility="collapsed"
+)
+st.sidebar.markdown("---")
+
+# ── 1) 등급 필터 ──
 st.sidebar.markdown("**🔍 등급 필터**")
 grade_filter = st.sidebar.radio(
     "표시할 등급 선택",
-    ["전체", "신뢰 가능", "주의 필요", "의심 기사", "신뢰 낮음", "분석 실패"],
+    ["전체", "신뢰 가능", "주의 필요", "의심 기사", "신뢰 낮음"],
+    label_visibility="collapsed"
+)
+
+st.sidebar.markdown("---")
+
+# ── 2) 날짜 범위 필터 ──
+st.sidebar.markdown("**📅 날짜 범위**")
+date_start = st.sidebar.date_input("시작일", value=None, key="date_start")
+date_end = st.sidebar.date_input("종료일", value=None, key="date_end")
+
+st.sidebar.markdown("---")
+
+# ── 3) 키워드 검색 ──
+st.sidebar.markdown("**🔎 키워드 검색**")
+keyword_search = st.sidebar.text_input(
+    "제목에서 검색",
+    placeholder="검색어 입력…",
     label_visibility="collapsed"
 )
 
@@ -181,6 +207,172 @@ st.sidebar.markdown(f"""<div style="font-size: 13px; line-height: 2;">
 </div>""", unsafe_allow_html=True)
 
 # ================================================================
+# 성능 측정 페이지 — 벤치마크 결과 시각화
+# ================================================================
+if page_mode == "🏎️ 성능 측정":
+    st.markdown('<div class="section-title">🏎️ Worker 스케일링 성능 비교</div>', unsafe_allow_html=True)
+
+    # ── 벤치마크 결과 JSON 로드 ──
+    BENCH_PATH = "/app/data/benchmark_results.json"
+    bench_data = None
+    try:
+        if os.path.exists(BENCH_PATH):
+            with open(BENCH_PATH, "r", encoding="utf-8") as f:
+                bench_data = json.load(f)
+    except Exception:
+        pass
+
+    if bench_data is None:
+        st.markdown("""<div style="text-align: center; padding: 60px 20px; color: #94A3B8;">
+<p style="font-size: 48px; margin-bottom: 16px;">🏎️</p>
+<p style="font-size: 18px; font-weight: 500;">벤치마크 결과가 없습니다</p>
+<p style="font-size: 14px;">호스트에서 아래 명령을 실행해주세요:</p>
+<pre style="background: #1E293B; color: #E2E8F0; padding: 16px; border-radius: 8px; text-align: left; display: inline-block; margin-top: 12px;">python3 benchmark.py</pre>
+</div>""", unsafe_allow_html=True)
+        st.stop()
+
+    results = bench_data.get("results", [])
+    num_articles = bench_data.get("num_articles", 0)
+    bench_time = bench_data.get("timestamp", "")
+
+    st.markdown(f"""<div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 16px 24px; margin-bottom: 24px;">
+<span style="font-size: 13px; color: #64748B;">측정 시각: <b>{bench_time}</b> &nbsp;|&nbsp; 테스트 기사: <b>{num_articles}개</b></span>
+</div>""", unsafe_allow_html=True)
+
+    # ── 요약 카드 3개 ──
+    if results:
+        cols = st.columns(len(results))
+        for i, r in enumerate(results):
+            with cols[i]:
+                # Worker 1개 대비 속도 향상 비율 계산
+                speedup = results[0]["total_time"] / r["total_time"] if r["total_time"] > 0 else 1
+                speedup_text = f"{speedup:.1f}x" if i > 0 else "기준"
+                card_border = "#0D9488" if i == len(results) - 1 else "#E2E8F0"
+                st.markdown(f"""<div style="border: 2px solid {card_border}; border-radius: 16px; padding: 24px; text-align: center; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
+<div style="font-size: 14px; color: #64748B; margin-bottom: 4px;">Worker {r['workers']}개</div>
+<div style="font-size: 36px; font-weight: 800; color: #0F1B2D;">{r['total_time']}초</div>
+<div style="font-size: 13px; color: #94A3B8; margin: 4px 0;">기사당 {r['avg_time']}초</div>
+<div style="display: inline-block; padding: 3px 12px; border-radius: 20px; background: {'#D1FAE5' if i > 0 else '#F1F5F9'}; color: {'#065F46' if i > 0 else '#64748B'}; font-size: 12px; font-weight: 700; margin-top: 4px;">{speedup_text}</div>
+</div>""", unsafe_allow_html=True)
+
+    # ── 막대 그래프: 총 처리 시간 비교 ──
+    st.markdown('<div class="section-title">총 처리 시간 비교</div>', unsafe_allow_html=True)
+    if results:
+        max_time = max(r["total_time"] for r in results)
+        for r in results:
+            bar_pct = (r["total_time"] / max_time * 100) if max_time > 0 else 0
+            # Worker 수에 따른 색상 변화 (1: 빨강 → 3: 노랑 → 5: 초록)
+            bar_colors = {1: "#EF4444", 3: "#F59E0B", 5: "#10B981"}
+            bar_color = bar_colors.get(r["workers"], "#0D9488")
+            st.markdown(f"""<div style="display: flex; align-items: center; margin: 12px 0;">
+<span style="width: 100px; font-size: 14px; font-weight: 600; color: #334155;">Worker {r['workers']}개</span>
+<div style="flex: 1; background: #F1F5F9; border-radius: 8px; height: 36px; overflow: hidden; margin: 0 16px;">
+<div style="width: {bar_pct}%; background: linear-gradient(90deg, {bar_color}, {bar_color}CC); height: 100%; border-radius: 8px; display: flex; align-items: center; padding-left: 12px; min-width: 60px; transition: width 0.5s ease;">
+<span style="color: #fff; font-size: 14px; font-weight: 700;">{r['total_time']}초</span>
+</div></div>
+<span style="width: 90px; font-size: 13px; color: #64748B; text-align: right;">avg {r['avg_time']}초</span>
+</div>""", unsafe_allow_html=True)
+
+    # ── 막대 그래프: 1000개 처리 예상 시간 ──
+    st.markdown('<div class="section-title">1000개 기사 처리 예상 시간</div>', unsafe_allow_html=True)
+    if results:
+        max_est = max(r["est_1000_min"] for r in results)
+        for r in results:
+            bar_pct = (r["est_1000_min"] / max_est * 100) if max_est > 0 else 0
+            bar_colors = {1: "#EF4444", 3: "#F59E0B", 5: "#10B981"}
+            bar_color = bar_colors.get(r["workers"], "#0D9488")
+            # 1시간 이상이면 시간 단위로도 표시
+            time_label = f"{r['est_1000_min']}분"
+            if r["est_1000_min"] >= 60:
+                time_label += f" ({r['est_1000_min']/60:.1f}시간)"
+            st.markdown(f"""<div style="display: flex; align-items: center; margin: 12px 0;">
+<span style="width: 100px; font-size: 14px; font-weight: 600; color: #334155;">Worker {r['workers']}개</span>
+<div style="flex: 1; background: #F1F5F9; border-radius: 8px; height: 36px; overflow: hidden; margin: 0 16px;">
+<div style="width: {bar_pct}%; background: linear-gradient(90deg, {bar_color}, {bar_color}CC); height: 100%; border-radius: 8px; display: flex; align-items: center; padding-left: 12px; min-width: 80px; transition: width 0.5s ease;">
+<span style="color: #fff; font-size: 14px; font-weight: 700;">{time_label}</span>
+</div></div></div>""", unsafe_allow_html=True)
+
+    # ── 결과 테이블 ──
+    st.markdown('<div class="section-title">상세 결과 표</div>', unsafe_allow_html=True)
+    if results:
+        table_rows = ""
+        for r in results:
+            speedup = results[0]["total_time"] / r["total_time"] if r["total_time"] > 0 else 1
+            table_rows += f"""<tr>
+<td style="padding: 12px 16px; font-weight: 700;">{r['workers']}개</td>
+<td style="padding: 12px 16px;">{r['total_time']}초</td>
+<td style="padding: 12px 16px;">{r['avg_time']}초</td>
+<td style="padding: 12px 16px;">{r['est_1000_min']}분</td>
+<td style="padding: 12px 16px; color: #0D9488; font-weight: 700;">{speedup:.2f}x</td>
+</tr>"""
+
+        st.markdown(f"""<table style="width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
+<thead><tr style="background: #0F1B2D; color: #E2E8F0;">
+<th style="padding: 14px 16px; text-align: left; font-size: 13px;">Worker 수</th>
+<th style="padding: 14px 16px; text-align: left; font-size: 13px;">총 처리 시간</th>
+<th style="padding: 14px 16px; text-align: left; font-size: 13px;">기사당 평균</th>
+<th style="padding: 14px 16px; text-align: left; font-size: 13px;">1000개 예상</th>
+<th style="padding: 14px 16px; text-align: left; font-size: 13px;">속도 향상</th>
+</tr></thead>
+<tbody style="font-size: 14px; color: #334155;">{table_rows}</tbody>
+</table>""", unsafe_allow_html=True)
+
+    # ── 페이지 하단 푸터 ──
+    st.markdown("""<div style="text-align: center; padding: 32px 0 16px 0; color: #94A3B8; font-size: 13px;">
+SSAK3 — AI 기반 뉴스 신뢰도 분석 시스템 &nbsp;|&nbsp; Streamlit + Flask + RabbitMQ + KR-FinBert
+</div>""", unsafe_allow_html=True)
+
+    st.stop()  # 성능 측정 페이지에서는 여기서 종료 — 아래의 분석 대시보드는 렌더링하지 않음
+
+# ================================================================
+# 분석 프로세스 시각화 — 5단계 가로 스텝
+# ================================================================
+st.markdown("""<div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 16px; padding: 28px 32px; margin-bottom: 32px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
+<p style="font-size: 15px; font-weight: 700; color: #0F1B2D; margin: 0 0 20px 0; padding-bottom: 8px; border-bottom: 2px solid #0D9488; display: inline-block;">분석 프로세스</p>
+<div style="display: flex; align-items: center; justify-content: center; gap: 0; flex-wrap: wrap;">
+<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
+<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0D9488, #14B8A6); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(13,148,136,0.3);">
+<span style="font-size: 24px;">🔗</span>
+</div>
+<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">1. URL 입력</p>
+<p style="font-size: 11px; color: #94A3B8; margin: 0;">뉴스 기사 URL을<br>입력합니다</p>
+</div>
+<div style="color: #0D9488; font-size: 22px; font-weight: 700; flex-shrink: 0; margin: 0 2px;">→</div>
+<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
+<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0D9488, #14B8A6); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(13,148,136,0.3);">
+<span style="font-size: 24px;">📄</span>
+</div>
+<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">2. 기사 크롤링</p>
+<p style="font-size: 11px; color: #94A3B8; margin: 0;">제목·본문·날짜를<br>자동 수집합니다</p>
+</div>
+<div style="color: #0D9488; font-size: 22px; font-weight: 700; flex-shrink: 0; margin: 0 2px;">→</div>
+<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
+<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0D9488, #14B8A6); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(13,148,136,0.3);">
+<span style="font-size: 24px;">🔍</span>
+</div>
+<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">3. 3대 지표 분석</p>
+<p style="font-size: 11px; color: #94A3B8; margin: 0;">키워드·자극성·출처<br>AI 분석 수행</p>
+</div>
+<div style="color: #0D9488; font-size: 22px; font-weight: 700; flex-shrink: 0; margin: 0 2px;">→</div>
+<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
+<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0D9488, #14B8A6); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(13,148,136,0.3);">
+<span style="font-size: 24px;">📊</span>
+</div>
+<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">4. 종합 점수 산출</p>
+<p style="font-size: 11px; color: #94A3B8; margin: 0;">가중 평균으로<br>신뢰도 점수 계산</p>
+</div>
+<div style="color: #0D9488; font-size: 22px; font-weight: 700; flex-shrink: 0; margin: 0 2px;">→</div>
+<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
+<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0F1B2D, #1E3A5F); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(15,27,45,0.3);">
+<span style="font-size: 24px;">✅</span>
+</div>
+<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">5. 결과 표시</p>
+<p style="font-size: 11px; color: #94A3B8; margin: 0;">등급·근거와 함께<br>결과를 제공합니다</p>
+</div>
+</div>
+</div>""", unsafe_allow_html=True)
+
+# ================================================================
 # 등급 판별 헬퍼 함수
 # ================================================================
 
@@ -198,13 +390,36 @@ def get_grade_color(grade):
     return GRADE_COLORS.get(grade, "#9CA3AF")
 
 def get_indicator_color(score):
-    """개별 지표 점수에 따른 프로그레스 바 색상"""
-    if score >= 70:
-        return "#10B981"
-    elif score >= 40:
-        return "#F59E0B"
+    """개별 지표 점수에 따른 프로그레스 바 색상 (4단계)"""
+    if score >= 75:
+        return "#10B981"   # 초록
+    elif score >= 50:
+        return "#F59E0B"   # 노랑
+    elif score >= 25:
+        return "#F97316"   # 주황
     else:
-        return "#EF4444"
+        return "#EF4444"   # 빨강
+
+def build_gauge_svg(score, grade, color):
+    """SVG 원형 게이지 HTML 생성 (stroke-dasharray 기반)"""
+    r = 50          # 반지름
+    stroke = 8      # 테두리 두께
+    size = (r + stroke) * 2
+    cx = cy = r + stroke
+    circumference = 2 * 3.14159 * r
+    filled = circumference * score / 100
+    gap = circumference - filled
+    return f"""<div class="gauge-wrap">
+<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}">
+<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#E2E8F0" stroke-width="{stroke}"/>
+<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" stroke-width="{stroke}"
+ stroke-dasharray="{filled:.1f} {gap:.1f}" stroke-linecap="round"
+ transform="rotate(-90 {cx} {cy})" style="transition: stroke-dasharray 0.6s ease;"/>
+<text x="{cx}" y="{cy - 4}" text-anchor="middle" class="gauge-score" fill="{color}">{score:.0f}</text>
+<text x="{cx}" y="{cy + 14}" text-anchor="middle" class="gauge-unit">/ 100</text>
+</svg>
+<span class="gauge-grade" style="background:{color};">{grade}</span>
+</div>"""
 
 # ================================================================
 # URL 입력 영역 — st.container + CSS 선택자로 카드 스타일 적용
@@ -245,6 +460,85 @@ with st.container():
                     st.error(f"API 서버 연결 실패: {e}")
 
 # ================================================================
+# 대량 분석 입력 영역 — 여러 URL을 줄바꿈으로 입력
+# ================================================================
+with st.container():
+    st.markdown("**📦 대량 뉴스 분석 요청**")
+
+    with st.form("bulk_form"):
+        bulk_input = st.text_area(
+            "분석할 URL을 줄바꿈으로 입력하세요",
+            placeholder="https://n.news.naver.com/article/001/...\nhttps://n.news.naver.com/article/002/...\nhttps://n.news.naver.com/article/003/...",
+            height=150,
+            label_visibility="collapsed"
+        )
+        bulk_submitted = st.form_submit_button("📦 대량 분석 요청")
+
+        if bulk_submitted:
+            # 줄바꿈으로 분리 후 빈 줄·공백 제거
+            urls = [u.strip() for u in bulk_input.strip().splitlines() if u.strip()]
+            # http로 시작하는 유효한 URL만 필터링
+            valid_urls = [u for u in urls if u.startswith("http")]
+
+            if not valid_urls:
+                st.error("유효한 URL이 없습니다. http:// 또는 https://로 시작하는 URL을 입력해주세요.")
+            else:
+                try:
+                    resp = requests.post(
+                        f"{API_URL}/analyze/bulk",
+                        json={"urls": valid_urls},
+                        timeout=30
+                    )
+                    if resp.status_code == 200:
+                        result = resp.json()
+                        count = result.get("count", 0)
+                        skipped = result.get("skipped", 0)
+                        msg = f"✅ {count}개 분석 요청 완료!"
+                        if skipped > 0:
+                            msg += f" (중복 {skipped}건 건너뜀)"
+                        st.success(msg)
+                    else:
+                        st.error(f"요청 실패: {resp.text}")
+                except Exception as e:
+                    st.error(f"API 서버 연결 실패: {e}")
+
+# ── 대량 분석 진행 상황 표시 + 자동 새로고침 ──
+auto_refresh = st.checkbox("🔄 5초마다 자동 새로고침", value=False)
+
+# DB에서 전체 / 완료 건수 조회하여 진행률 표시
+try:
+    if os.path.exists(DB_PATH):
+        _conn = sqlite3.connect(DB_PATH, timeout=5)
+        _cur = _conn.cursor()
+        _cur.execute("SELECT COUNT(*) FROM analysis_results")
+        _total = _cur.fetchone()[0]
+        _cur.execute("SELECT COUNT(*) FROM analysis_results WHERE status = 'done'")
+        _done = _cur.fetchone()[0]
+        _cur.execute("SELECT COUNT(*) FROM analysis_results WHERE status = 'failed'")
+        _fail = _cur.fetchone()[0]
+        _conn.close()
+
+        # 진행 상황 바 (완료+실패 / 전체)
+        _processed = _done + _fail
+        _progress = _processed / _total if _total > 0 else 0
+        st.markdown(f"""<div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 16px 24px; margin-bottom: 24px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+<span style="font-size: 14px; font-weight: 600; color: #0F1B2D;">📊 분석 진행 상황</span>
+<span style="font-size: 13px; color: #64748B;">전체: <b>{_total}건</b> &nbsp;|&nbsp; 완료: <b>{_done}건</b> &nbsp;|&nbsp; 실패: <b>{_fail}건</b></span>
+</div>
+<div style="background: #E2E8F0; border-radius: 8px; height: 12px; overflow: hidden;">
+<div style="width: {_progress * 100:.1f}%; height: 100%; border-radius: 8px; background: linear-gradient(90deg, #0D9488, #14B8A6); transition: width 0.4s ease;"></div>
+</div>
+</div>""", unsafe_allow_html=True)
+except Exception:
+    pass
+
+# 자동 새로고침 활성화 시 5초 후 페이지 재실행
+if auto_refresh:
+    time.sleep(5)
+    st.rerun()
+
+# ================================================================
 # 데이터가 없으면 안내 메시지 표시 후 종료
 # ================================================================
 if df.empty:
@@ -256,20 +550,38 @@ if df.empty:
     st.stop()
 
 # ================================================================
-# 사이드바 필터 적용
+# 사이드바 필터 적용 — 실패 기사 분리 후 3종 필터 결합
 # ================================================================
-if grade_filter == "분석 실패":
-    filtered_df = df[df['status'] == 'failed']
-elif grade_filter != "전체":
-    filtered_df = df[(df['grade'] == grade_filter) & (df['status'] == 'done')]
+failed_df = df[df['status'] == 'failed']
+done_df_all = df[df['status'] == 'done']
+
+# 등급 필터
+if grade_filter != "전체":
+    filtered_df = done_df_all[done_df_all['grade'] == grade_filter]
 else:
-    filtered_df = df
+    filtered_df = done_df_all.copy()
+
+# 날짜 범위 필터
+if date_start is not None:
+    filtered_df = filtered_df[
+        pd.to_datetime(filtered_df['analyzed_at']).dt.date >= date_start
+    ]
+if date_end is not None:
+    filtered_df = filtered_df[
+        pd.to_datetime(filtered_df['analyzed_at']).dt.date <= date_end
+    ]
+
+# 키워드 검색 (제목)
+if keyword_search:
+    filtered_df = filtered_df[
+        filtered_df['title'].str.contains(keyword_search, case=False, na=False)
+    ]
 
 # ================================================================
 # 상단 요약 카드 4개 — 아이콘 + 숫자 + 라벨
 # done 상태인 기사만 집계
 # ================================================================
-done_df = df[df['status'] == 'done']
+done_df = done_df_all
 
 avg_score = done_df['total_score'].mean() if not done_df.empty else 0
 reliable_count = len(done_df[done_df['total_score'] >= 80])
@@ -337,26 +649,13 @@ st.markdown('<div class="section-title">📋 기사별 분석 결과</div>', uns
 
 if filtered_df.empty:
     st.markdown("""<div style="text-align: center; padding: 40px; color: #94A3B8;">
-<p style="font-size: 16px;">해당 등급의 기사가 없습니다.</p>
+<p style="font-size: 16px;">조건에 맞는 기사가 없습니다.</p>
 </div>""", unsafe_allow_html=True)
 else:
     for _, row in filtered_df.iterrows():
         score = row['total_score']
         grade = row['grade']
-        status = row.get('status', 'done')
         color = get_grade_color(grade)
-        is_failed = (status == 'failed')
-
-        # ── 실패한 기사: 회색 카드 ──
-        if is_failed:
-            st.markdown(f"""<div class="article-card failed">
-<div class="grade-bar" style="background: #9CA3AF;"></div>
-<div class="card-body">
-<div class="card-title" style="color: #94A3B8;">❌ {row['title']}</div>
-<div class="card-meta">{row['url']}&nbsp;&nbsp;|&nbsp;&nbsp;{row['analyzed_at']}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: #9CA3AF;">분석 실패</span></div>
-<p style="color: #94A3B8; font-size: 14px; margin: 0;">크롤링에 실패하여 분석할 수 없습니다. URL을 확인해주세요.</p>
-</div></div>""", unsafe_allow_html=True)
-            continue
 
         # ── 정상 기사 카드 ──
         content_s = row['content_score']
@@ -444,11 +743,8 @@ else:
 <div class="card-title">{row['title']}</div>
 <div class="card-meta">{row['url']}&nbsp;&nbsp;|&nbsp;&nbsp;{row['analyzed_at']}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: {color};">{grade}</span></div>
 <div style="display: flex; gap: 32px; align-items: center; margin-top: 12px;">
-<div style="flex-shrink: 0;">
-<div class="score-circle" style="background: {color};">
-<span class="number">{score:.0f}</span>
-<span class="unit">/ 100</span>
-</div></div>
+<div style="flex-shrink: 0; min-width: 130px;">
+{build_gauge_svg(score, grade, color)}</div>
 <div style="flex: 1;">
 <div class="indicator-row">
 <span class="indicator-label">본문 일치도 (45%)</span>
@@ -473,6 +769,20 @@ else:
 </div></div>"""
 
         st.markdown(card_html, unsafe_allow_html=True)
+
+# ================================================================
+# 분석 실패 기사 — 별도 섹션
+# ================================================================
+if not failed_df.empty:
+    st.markdown(f'<div class="section-title">❌ 분석 실패 ({len(failed_df)}건)</div>', unsafe_allow_html=True)
+    for _, row in failed_df.iterrows():
+        st.markdown(f"""<div class="article-card failed">
+<div class="grade-bar" style="background: #9CA3AF;"></div>
+<div class="card-body">
+<div class="card-title" style="color: #94A3B8;">❌ {row['title']}</div>
+<div class="card-meta">{row['url']}&nbsp;&nbsp;|&nbsp;&nbsp;{row['analyzed_at']}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: #9CA3AF;">분석 실패</span></div>
+<p style="color: #94A3B8; font-size: 14px; margin: 0;">크롤링에 실패하여 분석할 수 없습니다. URL을 확인해주세요.</p>
+</div></div>""", unsafe_allow_html=True)
 
 # ================================================================
 # 페이지 하단 푸터
