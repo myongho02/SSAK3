@@ -1,9 +1,12 @@
-newspaper3k
+flask
 pika
+requests
+beautifulsoup4
+lxml_html_clean
+newspaper3k
 transformers
 torch
 scikit-learn
 numpy
 streamlit
 pandas
-flask

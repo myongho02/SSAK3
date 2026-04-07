@@ -124,7 +124,7 @@ header {visibility: hidden;}
 # ================================================================
 st.markdown("""<div style="background: linear-gradient(135deg, #0F1B2D 0%, #1E3A5F 100%); padding: 40px 48px; border-radius: 20px; margin-bottom: 32px; box-shadow: 0 4px 20px rgba(15,27,45,0.3);">
 <h1 style="color: #FFFFFF; margin: 0; font-size: 36px; font-weight: 700; letter-spacing: -0.5px;">📰 뉴스 신뢰도 분석 시스템</h1>
-<p style="color: #94A3B8; margin: 8px 0 0 0; font-size: 16px; font-weight: 300;">AI 기반 분산 처리 시스템 &nbsp;|&nbsp; 팀 싹쓰리</p>
+<p style="color: #94A3B8; margin: 8px 0 0 0; font-size: 16px; font-weight: 300;">규칙 기반 분석 + AI 보조지표 결합 &nbsp;|&nbsp; 팀 싹쓰리</p>
 </div>""", unsafe_allow_html=True)
 
 # ================================================================
@@ -202,8 +202,7 @@ failed_count = len(df[df['status'] == 'failed']) if not df.empty else 0
 st.sidebar.markdown(f"""<div style="font-size: 13px; line-height: 2;">
 📊 총 분석 건수: <b>{total_count}건</b><br>
 ✅ 성공: <b>{done_count}건</b><br>
-❌ 실패: <b>{failed_count}건</b><br>
-🤖 Worker: <b>1대</b>
+❌ 실패: <b>{failed_count}건</b>
 </div>""", unsafe_allow_html=True)
 
 # ================================================================
@@ -319,7 +318,7 @@ if page_mode == "🏎️ 성능 측정":
 
     # ── 페이지 하단 푸터 ──
     st.markdown("""<div style="text-align: center; padding: 32px 0 16px 0; color: #94A3B8; font-size: 13px;">
-SSAK3 — AI 기반 뉴스 신뢰도 분석 시스템 &nbsp;|&nbsp; Streamlit + Flask + RabbitMQ + KR-FinBert
+SSAK3 — 규칙 기반 분석 + AI 보조지표 결합 뉴스 신뢰도 점수화 시스템
 </div>""", unsafe_allow_html=True)
 
     st.stop()  # 성능 측정 페이지에서는 여기서 종료 — 아래의 분석 대시보드는 렌더링하지 않음
@@ -351,7 +350,7 @@ st.markdown("""<div style="background: #FFFFFF; border: 1px solid #E2E8F0; borde
 <span style="font-size: 24px;">🔍</span>
 </div>
 <p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">3. 3대 지표 분석</p>
-<p style="font-size: 11px; color: #94A3B8; margin: 0;">키워드·자극성·출처<br>AI 분석 수행</p>
+<p style="font-size: 11px; color: #94A3B8; margin: 0;">키워드·자극성·출처<br>규칙+AI 보조 분석</p>
 </div>
 <div style="color: #0D9488; font-size: 22px; font-weight: 700; flex-shrink: 0; margin: 0 2px;">→</div>
 <div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
@@ -505,26 +504,45 @@ with st.container():
 # ── 대량 분석 진행 상황 표시 + 자동 새로고침 ──
 auto_refresh = st.checkbox("🔄 5초마다 자동 새로고침", value=False)
 
-# DB에서 전체 / 완료 건수 조회하여 진행률 표시
+# DB에서 jobs 기반 진행률 조회 (jobs 테이블이 없으면 analysis_results로 폴백)
 try:
     if os.path.exists(DB_PATH):
         _conn = sqlite3.connect(DB_PATH, timeout=5)
         _cur = _conn.cursor()
-        _cur.execute("SELECT COUNT(*) FROM analysis_results")
-        _total = _cur.fetchone()[0]
-        _cur.execute("SELECT COUNT(*) FROM analysis_results WHERE status = 'done'")
-        _done = _cur.fetchone()[0]
-        _cur.execute("SELECT COUNT(*) FROM analysis_results WHERE status = 'failed'")
-        _fail = _cur.fetchone()[0]
+        # jobs 테이블 기반 진행률
+        try:
+            _cur.execute("SELECT COUNT(*) FROM jobs")
+            _total = _cur.fetchone()[0]
+            _cur.execute("SELECT COUNT(*) FROM jobs WHERE status = 'done'")
+            _done = _cur.fetchone()[0]
+            _cur.execute("SELECT COUNT(*) FROM jobs WHERE status = 'failed'")
+            _fail = _cur.fetchone()[0]
+            _cur.execute("SELECT COUNT(*) FROM jobs WHERE status = 'pending'")
+            _pending = _cur.fetchone()[0]
+            _cur.execute("SELECT COUNT(*) FROM jobs WHERE status = 'processing'")
+            _processing = _cur.fetchone()[0]
+        except Exception:
+            # jobs 테이블이 아직 없으면 analysis_results로 폴백
+            _cur.execute("SELECT COUNT(*) FROM analysis_results")
+            _total = _cur.fetchone()[0]
+            _cur.execute("SELECT COUNT(*) FROM analysis_results WHERE status = 'done'")
+            _done = _cur.fetchone()[0]
+            _cur.execute("SELECT COUNT(*) FROM analysis_results WHERE status = 'failed'")
+            _fail = _cur.fetchone()[0]
+            _pending = 0
+            _processing = 0
         _conn.close()
 
         # 진행 상황 바 (완료+실패 / 전체)
         _processed = _done + _fail
         _progress = _processed / _total if _total > 0 else 0
+        status_detail = f"전체: <b>{_total}건</b> &nbsp;|&nbsp; 완료: <b>{_done}건</b> &nbsp;|&nbsp; 실패: <b>{_fail}건</b>"
+        if _pending > 0 or _processing > 0:
+            status_detail += f" &nbsp;|&nbsp; 대기: <b>{_pending}건</b> &nbsp;|&nbsp; 처리중: <b>{_processing}건</b>"
         st.markdown(f"""<div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 16px 24px; margin-bottom: 24px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
 <span style="font-size: 14px; font-weight: 600; color: #0F1B2D;">📊 분석 진행 상황</span>
-<span style="font-size: 13px; color: #64748B;">전체: <b>{_total}건</b> &nbsp;|&nbsp; 완료: <b>{_done}건</b> &nbsp;|&nbsp; 실패: <b>{_fail}건</b></span>
+<span style="font-size: 13px; color: #64748B;">{status_detail}</span>
 </div>
 <div style="background: #E2E8F0; border-radius: 8px; height: 12px; overflow: hidden;">
 <div style="width: {_progress * 100:.1f}%; height: 100%; border-radius: 8px; background: linear-gradient(90deg, #0D9488, #14B8A6); transition: width 0.4s ease;"></div>
@@ -643,6 +661,17 @@ for g in grade_order:
 </div></div></div>""", unsafe_allow_html=True)
 
 # ================================================================
+# 신뢰도 기준 설명
+# ================================================================
+st.markdown("""<div style="background: #F0FDFA; border: 1px solid #99F6E4; border-radius: 12px; padding: 16px 24px; margin-bottom: 24px;">
+<p style="font-size: 14px; font-weight: 700; color: #0F766E; margin: 0 0 8px 0;">📐 신뢰도 점수 산출 기준</p>
+<p style="font-size: 13px; color: #334155; margin: 0; line-height: 1.8;">
+종합 점수 = <b>본문 일치도 (45%)</b> + <b>자극성 분석 (35%)</b> + <b>출처 신뢰도 (20%)</b><br>
+규칙 기반 분석(키워드 매칭, 자극적 표현 사전, 출처 분류)과 AI 보조지표(KR-FinBert 감성분석)를 결합하여 뉴스 신뢰도를 점수화합니다.
+</p>
+</div>""", unsafe_allow_html=True)
+
+# ================================================================
 # 기사별 상세 결과 — 카드 형태 + 원형 게이지 + 프로그레스 바
 # ================================================================
 st.markdown('<div class="section-title">📋 기사별 분석 결과</div>', unsafe_allow_html=True)
@@ -685,21 +714,26 @@ else:
         # ── 섹션 1: 본문 일치도 근거 HTML 생성 ──
         all_kw = kw_data.get('keywords', [])
         matched_kw = kw_data.get('matched', [])
+        negated_kw = kw_data.get('negated', [])  # 부정어로 매칭 취소된 키워드
         cosine_raw = kw_data.get('cosine_raw', 0)
         kw_tags = ""
         for kw in all_kw:
             if kw in matched_kw:
                 kw_tags += f'<span class="kw-tag matched">{kw} ✓</span>'
+            elif kw in negated_kw:
+                # 부정어로 매칭 취소된 키워드는 노란색으로 표시
+                kw_tags += f'<span class="kw-tag" style="background:#FEF3C7;color:#92400E;">{kw} ⚠부정</span>'
             else:
                 kw_tags += f'<span class="kw-tag missed">{kw} ✗</span>'
 
         evidence1 = ""
         if all_kw:
             match_pct = round(len(matched_kw) / len(all_kw) * 100, 1) if all_kw else 0
+            negated_info = f" (부정어 근접으로 {len(negated_kw)}개 취소)" if negated_kw else ""
             evidence1 = f"""<div class="evidence-section">
 <div class="evidence-title">📝 본문 일치도 분석 근거</div>
 <div class="evidence-row">제목 키워드: {kw_tags}</div>
-<div class="evidence-row">본문에서 발견된 키워드: <b>{len(matched_kw)}개</b> / 전체 {len(all_kw)}개 (매칭률 <b>{match_pct}%</b>)</div>
+<div class="evidence-row">본문에서 발견된 키워드: <b>{len(matched_kw)}개</b> / 전체 {len(all_kw)}개 (매칭률 <b>{match_pct}%</b>){negated_info}</div>
 <div class="evidence-row">제목-본문 코사인 유사도: <b>{cosine_raw}</b></div>
 <div class="evidence-row">최종 본문 일치도: <b>{content_s:.1f}점</b></div>
 </div>"""
@@ -720,7 +754,7 @@ else:
 <div class="evidence-title">⚡ 자극성 분석 근거</div>
 <div class="evidence-row">감지된 자극적 표현: {prov_tags if prov_tags else '<span style="color:#94A3B8;">없음</span>'}</div>
 <div class="evidence-row">자극적 표현 비율: <b>{prov_ratio}%</b> (본문 대비)</div>
-<div class="evidence-row">AI 감성분석 결과: 중립 <b>{ai_neutral}%</b> / 부정 <b>{ai_negative}%</b> / 긍정 <b>{ai_positive}%</b></div>
+<div class="evidence-row">논조 분석 보조지표 (KR-FinBert): 중립 <b>{ai_neutral}%</b> / 부정 <b>{ai_negative}%</b> / 긍정 <b>{ai_positive}%</b></div>
 <div class="evidence-row">최종 자극성 점수: <b>{provocative_s:.1f}점</b></div>
 </div>"""
 
@@ -775,18 +809,37 @@ else:
 # ================================================================
 if not failed_df.empty:
     st.markdown(f'<div class="section-title">❌ 분석 실패 ({len(failed_df)}건)</div>', unsafe_allow_html=True)
-    for _, row in failed_df.iterrows():
-        st.markdown(f"""<div class="article-card failed">
+    st.markdown("""<div style="background: #FEF2F2; border: 1px solid #FECACA; border-radius: 10px; padding: 12px 18px; margin-bottom: 16px; font-size: 13px; color: #991B1B;">
+실패한 기사는 아래 <b>재시도</b> 버튼으로 다시 분석을 요청할 수 있습니다. (failed 상태는 중복으로 간주하지 않습니다.)
+</div>""", unsafe_allow_html=True)
+    for idx, row in failed_df.iterrows():
+        col_card, col_btn = st.columns([6, 1])
+        with col_card:
+            st.markdown(f"""<div class="article-card failed">
 <div class="grade-bar" style="background: #9CA3AF;"></div>
 <div class="card-body">
 <div class="card-title" style="color: #94A3B8;">❌ {row['title']}</div>
 <div class="card-meta">{row['url']}&nbsp;&nbsp;|&nbsp;&nbsp;{row['analyzed_at']}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: #9CA3AF;">분석 실패</span></div>
 <p style="color: #94A3B8; font-size: 14px; margin: 0;">크롤링에 실패하여 분석할 수 없습니다. URL을 확인해주세요.</p>
 </div></div>""", unsafe_allow_html=True)
+        with col_btn:
+            if st.button("🔄 재시도", key=f"retry_{idx}"):
+                try:
+                    resp = requests.post(
+                        f"{API_URL}/analyze",
+                        json={"url": row['url']},
+                        timeout=5
+                    )
+                    if resp.status_code == 200:
+                        st.success("재시도 요청 완료!")
+                    else:
+                        st.error("재시도 실패")
+                except Exception as e:
+                    st.error(f"API 연결 실패: {e}")
 
 # ================================================================
 # 페이지 하단 푸터
 # ================================================================
 st.markdown("""<div style="text-align: center; padding: 32px 0 16px 0; color: #94A3B8; font-size: 13px;">
-SSAK3 — AI 기반 뉴스 신뢰도 분석 시스템 &nbsp;|&nbsp; Streamlit + Flask + RabbitMQ + KR-FinBert
+SSAK3 — 규칙 기반 분석 + AI 보조지표 결합 뉴스 신뢰도 점수화 시스템
 </div>""", unsafe_allow_html=True)

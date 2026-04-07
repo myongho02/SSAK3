@@ -13,19 +13,23 @@ from sklearn.metrics.pairwise import cosine_similarity
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# ========== AI 모델 로딩 (Worker 시작 시 1번만 로딩) ==========
+# ========== AI 보조지표 모델 로딩 (Worker 시작 시 1번만 로딩) ==========
 # snunlp/KR-FinBert-SC: 한국어 감성분석 특화 모델 (긍정/부정/중립 분류)
-# 금융 뉴스 학습 기반이라 뉴스 기사의 감성 판별에 적합
+# 금융 뉴스 학습 기반이라 뉴스 기사의 논조 판별에 적합
+#
+# [역할] 자극성 분석의 보조지표로 사용 (단독 판정이 아닌 규칙 기반 분석과 50:50 결합)
+# - 뉴스의 진위를 판별하는 모델이 아님
+# - 기사의 논조(중립/긍정/부정)를 분류하여 자극성 점수 산출에 보조적으로 활용
 #
 # [최적화] pipeline() 대신 tokenizer + model을 직접 로딩
 # - torch.no_grad()로 그래디언트 계산 비활성화 → 메모리 절감 + 속도 향상
 # - 배치 추론 가능 → 여러 기사를 한번에 처리할 때 효율적
-print("[Worker] AI 모델 로딩 중... (처음에 1~2분 걸릴 수 있음)")
+print("[Worker] AI 보조지표 모델 로딩 중... (처음에 1~2분 걸릴 수 있음)")
 MODEL_NAME = "snunlp/KR-FinBert-SC"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
 model.eval()  # 추론 모드 전환 — dropout 등 학습 전용 레이어 비활성화
-print("[Worker] AI 모델 로딩 완료!")
+print("[Worker] AI 보조지표 모델 로딩 완료!")
 
 # ========== DB 초기화 ==========
 DB_PATH = "/app/data/results.db"
@@ -72,6 +76,29 @@ def init_db():
             cursor.execute(f"ALTER TABLE analysis_results ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
             pass  # 이미 존재하는 컬럼 — 무시
+
+    # ── jobs 테이블: 분석 요청의 생명주기를 추적 ──
+    # API가 job을 생성(pending)하고, Worker가 상태를 갱신(processing→done/failed)한다.
+    # 대시보드는 jobs 기준으로 진행률을 표시한다.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            queued_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            error_message TEXT,
+            result_id INTEGER,
+            retry_count INTEGER DEFAULT 0
+        )
+    ''')
+
+    # 마이그레이션: 기존 jobs 테이블에 retry_count가 없으면 추가
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN retry_count INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -144,6 +171,62 @@ def crawl_article(url):
     return article.title, article.text, domain
 
 # ========== 신뢰도 분석 함수들 ==========
+
+def strip_quoted_text(text):
+    """따옴표(" ", ' ', 「 」, 『 』) 안의 인용문을 제거한다.
+
+    자극적 단어가 인용문 안에 있으면 기자의 표현이 아니라
+    취재원의 발언이므로 자극성 감점 대상에서 제외해야 한다.
+    예: "충격적 사건"이라고 밝혔다 → "충격적 사건" 부분이 제거됨
+
+    Returns: 인용문이 제거된 텍스트
+    """
+    # 큰따옴표 (유니코드 스마트 쿼트 포함)
+    text = re.sub(r'\u201c[^\u201d]*\u201d', '', text)  # "…"
+    text = re.sub(r'"[^"]*"', '', text)                  # "…"
+    # 작은따옴표 (유니코드 스마트 쿼트 포함)
+    text = re.sub(r'\u2018[^\u2019]*\u2019', '', text)  # '…'
+    text = re.sub(r"'[^']*'", '', text)                  # '…'
+    # 꺾쇠 인용 부호
+    text = re.sub(r'「[^」]*」', '', text)
+    text = re.sub(r'『[^』]*』', '', text)
+    return text
+
+
+def is_negated_in_context(keyword, body, window=10):
+    """본문에서 키워드 주변(앞뒤 window글자)에 부정어가 있는지 확인한다.
+
+    제목 키워드가 본문에 등장하더라도 부정어와 함께 쓰이면
+    제목과 본문의 의미가 반대일 수 있으므로, 해당 매칭을 취소한다.
+    예: 제목 "정부, 인상 확정" / 본문 "인상을 하지 않겠다고 발표" → 매칭 취소
+
+    한국어는 부정어가 키워드에서 수 글자 떨어질 수 있으므로
+    기본 윈도우를 10글자로 설정한다 (예: "인상을 하지 않겠다"에서 인상↔않 거리 ≈ 7)
+
+    Args:
+        keyword: 확인할 키워드
+        body: 본문 텍스트
+        window: 키워드 앞뒤로 확인할 글자 수 (기본 10)
+    Returns: True면 부정어가 근처에 있음 (매칭 취소 대상)
+    """
+    NEGATION_WORDS = ['않', '아니', '부인', '거부', '반박', '부정', '없', '못']
+
+    # 키워드가 본문에서 등장하는 모든 위치를 찾음
+    for match in re.finditer(re.escape(keyword), body):
+        start = match.start()
+        end = match.end()
+        # 키워드 앞뒤 window글자 범위의 텍스트를 추출
+        context_start = max(0, start - window)
+        context_end = min(len(body), end + window)
+        context = body[context_start:context_end]
+
+        # 부정어가 이 범위 안에 있으면 부정 문맥으로 판단
+        for neg in NEGATION_WORDS:
+            if neg in context:
+                return True
+
+    return False
+
 
 def extract_lead_sentences(body, n=3):
     """본문에서 첫 N문장(리드)을 추출한다.
@@ -221,7 +304,18 @@ def analyze_content_similarity(title, body):
         }
 
     # 각 키워드가 본문에 등장하는지 확인하고, 매칭된 키워드 목록을 기록
-    matched_list = [kw for kw in keywords if kw in body]
+    # [개선] 부정어 근접 체크: 키워드 앞뒤 5글자 이내에 부정어가 있으면
+    # 제목과 본문의 의미가 반대일 수 있으므로 매칭을 취소한다
+    matched_list = []
+    negated_list = []  # 부정어에 의해 매칭 취소된 키워드
+    for kw in keywords:
+        if kw in body:
+            if is_negated_in_context(kw, body):
+                # 부정어가 근처에 있으므로 매칭 취소
+                negated_list.append(kw)
+            else:
+                matched_list.append(kw)
+
     match_ratio = len(matched_list) / len(keywords)
     keyword_score = match_ratio * 100
 
@@ -233,6 +327,7 @@ def analyze_content_similarity(title, body):
     details = {
         "keywords": keywords,           # 제목에서 추출한 전체 키워드
         "matched": matched_list,         # 본문에서 발견된 키워드
+        "negated": negated_list,         # 부정어로 매칭 취소된 키워드
         "cosine_raw": round(cosine_score, 4)  # 코사인 유사도 원본값 (0~1)
     }
 
@@ -280,7 +375,11 @@ def _run_sentiment_model(texts):
     return results
 
 def analyze_ai_sentiment(text):
-    """AI 감성분석 보조 지표 — HuggingFace KR-FinBert-SC 모델 사용
+    """자극성/논조 보조지표 — KR-FinBert-SC 모델로 기사 논조를 분류
+
+    이 함수는 뉴스의 진위를 판별하지 않는다.
+    기사의 논조(중립/긍정/부정)를 분류하여 자극성 점수 산출에 보조적으로 활용한다.
+    규칙 기반 자극적 단어 감지와 50:50으로 결합되어 최종 자극성 점수에 반영된다.
 
     [최적화 내용]
     - 본문 전체(512자) 대신 리드 3문장만 입력 → 토큰 수 감소로 추론 속도 향상
@@ -322,10 +421,12 @@ def analyze_ai_sentiment(text):
         return 50.0, {"neutral": 33.3, "positive": 33.3, "negative": 33.3}
 
 def analyze_ai_sentiment_batch(texts):
-    """여러 기사의 본문을 배치로 감성분석한다.
+    """여러 기사의 본문을 배치로 논조 분석한다 (자극성/논조 보조지표).
 
-    대량 분석(/analyze/bulk) 시 기사별로 모델을 호출하는 대신,
-    여러 기사의 리드를 모아서 한번에 추론하여 GPU/CPU 활용률을 높인다.
+    TODO: 현재 Worker의 process_message()는 기사를 1건씩 처리하므로
+    이 배치 함수가 실제로 호출되지 않는다.
+    Worker가 큐에서 여러 메시지를 모아 배치 처리하는 구조로 전환하면
+    analyze_provocative() 내부에서 이 함수를 활용할 수 있다.
 
     Args:
         texts: 기사 본문 리스트
@@ -364,19 +465,28 @@ def analyze_ai_sentiment_batch(texts):
 
     return results
 
-def analyze_provocative(title, body):
-    """지표 2: 자극성 분석 (35%) — 단어 기반 분석 + AI 감성분석 결합
+def analyze_provocative(title, body, source_score=0):
+    """지표 2: 자극성 분석 (35%) — 단어 기반 분석 + AI 논조 보조지표 결합
 
     [분석 방법]
     1. 단어 기반 분석 (50%): 카테고리별 자극적 표현 + 문장부호 남용 감지
-    2. AI 모델 분석 (50%): KR-FinBert-SC로 본문의 감성(긍정/부정/중립) 판별
-    3. 최종 점수 = (단어 기반 × 0.5) + (AI 모델 × 0.5)
+    2. AI 보조지표 (50%): KR-FinBert-SC로 본문의 논조(긍정/부정/중립) 분류
+    3. 최종 점수 = (단어 기반 × 0.5) + (AI 보조 × 0.5)
 
     [단어 기반 분석 세부]
     - 자극적 단어를 4가지 카테고리로 분류하고 카테고리별 가중치 적용
     - 제목에 등장하는 자극적 단어는 가중치 2배 (클릭 유도 목적이 강함)
     - 본문 길이(글자 수) 대비 비율로 정규화하여 긴 기사가 불이익받지 않도록 함
     - 느낌표(!!)/물음표(??) 연속 사용도 감점 대상에 포함
+
+    [개선 사항]
+    - 인용문(" " 등) 안의 자극적 단어는 감점하지 않음 (취재원 발언이므로)
+    - "속보", "단독"은 주요 언론사(85점) 기사에서는 뉴스 용어로 간주하여 면제
+
+    Args:
+        title: 기사 제목
+        body: 기사 본문
+        source_score: 출처 신뢰도 점수 (주요 언론사 면제 판단용, 기본 0)
 
     참고: Alonso et al., "Sentiment Analysis for Fake News Detection" (Electronics, MDPI, 2021)
     """
@@ -403,25 +513,40 @@ def analyze_provocative(title, body):
             ]
         },
         # 선정형: 감정을 자극하여 클릭을 유도하는 표현 (가중치 1.2)
+        # "속보", "단독"은 제거 — 주요 언론사에서는 뉴스 용어로 사용하므로
+        # source_score가 85점(주요 언론사)이면 아래 NEWS_TERMS로 면제 처리
         'sensational': {
             'weight': 1.2,
             'words': [
-                '충격', '경악', '소름', '폭로', '단독', '특종',
+                '충격', '경악', '소름', '폭로', '특종',
                 '발칵', '난리', '파문', '후폭풍', '대참사',
                 '충격적', '소름끼치는', '믿기힘든', '경악스러운',
                 '논란', '파장', '급반전', '반전',
             ]
         },
         # 공포형: 불안·공포를 조성하는 표현 (가중치 1.3)
+        # "속보"는 NEWS_TERMS로 분리 — 주요 언론사 면제 대상
         'fear': {
             'weight': 1.3,
             'words': [
-                '긴급', '속보', '비상', '패닉', '공포', '참사',
+                '긴급', '비상', '패닉', '공포', '참사',
                 '전율', '아찔', '섬뜩', '끔찍', '절규',
                 '날벼락', '치명적', '위험', '경고', '대재앙',
             ]
         },
     }
+
+    # ── "속보", "단독"은 주요 언론사(85점)이면 면제, 아니면 감점 대상 ──
+    # 주요 언론사에서는 정당한 뉴스 용어로 사용하지만,
+    # 출처 불명 매체에서는 클릭 유도 목적일 수 있으므로 구분
+    NEWS_TERMS = ['속보', '단독']
+    is_major_source = (source_score >= 85)
+
+    # ── 0단계: 인용문 제거 ──
+    # 따옴표 안의 텍스트는 취재원의 발언이므로 자극성 감점 대상에서 제외
+    # 예: "충격적 사건"이라고 밝혔다 → "충격적 사건" 부분을 제거
+    title_for_check = strip_quoted_text(title)
+    body_for_check = strip_quoted_text(body)
 
     # ── 1단계: 제목과 본문에서 카테고리별 자극적 단어 검출 ──
     TITLE_MULTIPLIER = 2.0
@@ -442,8 +567,9 @@ def analyze_provocative(title, body):
         cat_label = CATEGORY_LABELS[category]
 
         for word in config['words']:
-            title_hits = len(re.findall(re.escape(word), title))
-            body_hits = len(re.findall(re.escape(word), body))
+            # 인용문이 제거된 텍스트에서 자극적 단어를 검색
+            title_hits = len(re.findall(re.escape(word), title_for_check))
+            body_hits = len(re.findall(re.escape(word), body_for_check))
 
             if title_hits > 0 or body_hits > 0:
                 # 감지된 단어를 카테고리별로 기록
@@ -452,6 +578,27 @@ def analyze_provocative(title, body):
                 detected_words[cat_label].append(word)
 
             weighted_hit_count += cat_weight * (title_hits * TITLE_MULTIPLIER + body_hits)
+
+    # ── 1-1단계: "속보", "단독" 처리 ──
+    # 주요 언론사(85점)이면 뉴스 용어로 간주하여 면제
+    # 그 외에는 선정형(가중치 1.2)으로 감점
+    for term in NEWS_TERMS:
+        title_hits = len(re.findall(re.escape(term), title_for_check))
+        body_hits = len(re.findall(re.escape(term), body_for_check))
+
+        if title_hits > 0 or body_hits > 0:
+            if is_major_source:
+                # 주요 언론사에서는 뉴스 용어이므로 감점하지 않음
+                # 대신 근거에는 기록 (면제된 사실을 표시)
+                if '뉴스용어(면제)' not in detected_words:
+                    detected_words['뉴스용어(면제)'] = []
+                detected_words['뉴스용어(면제)'].append(term)
+            else:
+                # 주요 언론사가 아니면 선정형으로 감점
+                if '선정' not in detected_words:
+                    detected_words['선정'] = []
+                detected_words['선정'].append(term)
+                weighted_hit_count += 1.2 * (title_hits * TITLE_MULTIPLIER + body_hits)
 
     # ── 2단계: 느낌표/물음표 연속 사용 감지 ──
     punctuation_hits = len(re.findall(r'[!]{2,}', f"{title} {body}"))
@@ -485,10 +632,8 @@ def analyze_provocative(title, body):
 def analyze_source(url, source_name=""):
     """지표 3: 출처 신뢰도 (20%) — 원본 언론사명 기반 신뢰도 판정
 
-    [개선된 분석 방법]
-    기존: URL의 도메인만 확인 → 네이버 뉴스는 전부 naver.com으로 65점 고정
-    개선: 크롤링 시 추출한 원본 언론사명(source_name)으로 판정
-          → "연합뉴스", "KBS" 등 실제 언론사를 구분하여 정확한 점수 부여
+    규칙 기반 분석으로, AI 모델은 사용하지 않는다.
+    크롤링 시 추출한 원본 언론사명을 사전 정의된 목록과 대조하여 점수를 부여한다.
 
     [판정 기준 — 3단계]
     1. 주요 언론사 (85점): 통신사, 지상파, 종합일간지 등 공신력 있는 매체
@@ -498,6 +643,9 @@ def analyze_source(url, source_name=""):
     Args:
         url: 기사 URL (언론사명 추출 실패 시 도메인 기반 폴백용)
         source_name: 크롤링 시 추출한 원본 언론사명 (예: "연합뉴스", "KBS")
+
+    TODO: MAJOR_SOURCES, REGISTERED_SOURCES를 별도 config 파일(JSON/YAML)로 분리하면
+    코드 수정 없이 언론사 목록을 관리할 수 있다.
     """
 
     # ── 주요 언론사 목록 (85점) ──
@@ -560,7 +708,9 @@ def analyze_source(url, source_name=""):
     return 35.0, "출처 불명"
 
 def calculate_total_score(content, provocative, source):
-    """종합 점수: 본문일치도(45%) + 자극성분석(35%) + 출처신뢰도(20%)"""
+    """종합 점수: 본문일치도(45%) + 자극성분석(35%) + 출처신뢰도(20%)
+    규칙 기반 분석과 AI 보조지표를 결합한 가중 평균 점수.
+    """
     total = (content * 0.45) + (provocative * 0.35) + (source * 0.20)
     return round(total, 1)
 
@@ -583,6 +733,8 @@ def save_to_db(result):
     1. timeout=30: 다른 Worker가 쓰기 중이면 최대 30초 대기
     2. try-except: locked 에러 발생 시 3초 후 재시도 (최대 3회)
     3. finally: 예외 발생 여부와 관계없이 DB 연결을 반드시 닫음
+
+    Returns: True면 저장 성공, False면 저장 실패
     """
     max_retries = 3  # 최대 재시도 횟수
 
@@ -611,7 +763,7 @@ def save_to_db(result):
                 result.get('source_name', '')
             ))
             conn.commit()
-            return  # 성공하면 함수 종료
+            return True  # 저장 성공
 
         except sqlite3.OperationalError as e:
             # "database is locked" 에러: 다른 Worker가 쓰기 중
@@ -620,26 +772,40 @@ def save_to_db(result):
                 time.sleep(3)
             else:
                 # 3회 모두 실패하거나 다른 종류의 에러면 로그 출력
-                print(f"[Worker] DB 저장 실패: {e}")
+                print(f"[Worker] DB 저장 실패 (url={result['url']}): {e}")
+                return False  # 저장 실패
+
+        except Exception as e:
+            print(f"[Worker] DB 저장 중 예상치 못한 오류 (url={result['url']}): {e}")
+            return False  # 저장 실패
 
         finally:
             # 예외 발생 여부와 관계없이 연결을 반드시 닫아 잠금 해제
             if conn:
                 conn.close()
 
+    print(f"[Worker] DB 저장 최종 실패 — {max_retries}회 재시도 모두 실패 (url={result['url']})")
+    return False
+
 # ========== 메인: 큐에서 기사 꺼내서 분석 ==========
 
 def is_already_analyzed(url):
-    """해당 URL이 이미 분석되었는지 DB에서 확인한다.
+    """해당 URL이 이미 성공적으로 분석되었는지 DB에서 확인한다.
     같은 기사를 중복 분석하면 DB에 동일한 결과가 쌓이고,
     Worker 리소스(크롤링 + AI 모델 추론)가 낭비되므로 사전에 체크한다.
 
-    Returns: True면 이미 분석됨 → skip, False면 신규 → 분석 진행
+    status='done'인 결과만 중복으로 간주한다.
+    status='failed'인 경우는 재시도할 수 있도록 중복 처리하지 않는다.
+
+    Returns: True면 이미 분석 완료됨 → skip, False면 신규 또는 이전 실패 → 분석 진행
     """
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM analysis_results WHERE url = ?", (url,))
+        cursor.execute(
+            "SELECT COUNT(*) FROM analysis_results WHERE url = ? AND status = 'done'",
+            (url,)
+        )
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
@@ -647,15 +813,51 @@ def is_already_analyzed(url):
         # DB 조회 실패 시에는 안전하게 분석 진행 (중복보다 누락이 더 나쁨)
         return False
 
+def update_job_status(job_id, status, error_message=None, result_id=None):
+    """jobs 테이블의 해당 job을 상태 갱신한다.
+    job_id 기반으로 정확한 job을 추적한다.
+    pending → processing → done/failed 순서로 상태가 전이된다.
+
+    job_id가 None이면 (구버전 메시지 호환) 아무것도 하지 않는다.
+    """
+    if job_id is None:
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        cursor = conn.cursor()
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        if status == 'processing':
+            cursor.execute(
+                "UPDATE jobs SET status = ?, started_at = ? WHERE id = ?",
+                (status, now, job_id)
+            )
+        elif status in ('done', 'failed'):
+            cursor.execute(
+                "UPDATE jobs SET status = ?, finished_at = ?, error_message = ?, result_id = ? WHERE id = ?",
+                (status, now, error_message, result_id, job_id)
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[Worker] jobs 상태 갱신 실패 (job_id={job_id}, status={status}): {e}")
+
 def process_message(ch, method, properties, body):
-    """큐에서 메시지를 받으면 실행되는 함수"""
+    """큐에서 메시지를 받으면 실행되는 함수.
+    메시지 형식: {"job_id": 123, "url": "https://..."}
+    job_id가 없는 구버전 메시지도 호환 처리한다.
+    """
     data = json.loads(body)
     url = data['url']
-    print(f"[Worker] 분석 시작: {url}")
+    job_id = data.get('job_id')  # 구버전 메시지는 job_id가 없을 수 있음
+    print(f"[Worker] 분석 시작: {url} (job_id={job_id})")
 
-    # ── 중복 분석 방지: 이미 분석된 URL이면 건너뛰기 ──
+    # job 상태를 processing으로 갱신
+    update_job_status(job_id, 'processing')
+
+    # ── 중복 분석 방지: 이미 분석 완료(done)된 URL이면 건너뛰기 ──
     if is_already_analyzed(url):
         print(f"[Worker] 이미 분석된 기사입니다 (skip): {url}")
+        update_job_status(job_id, 'done')
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
@@ -672,27 +874,37 @@ def process_message(ch, method, properties, body):
             'total': 0, 'grade': '분석 불가', 'status': 'failed',
             'analyzed_at': time.strftime("%Y-%m-%d %H:%M:%S")
         }
-        save_to_db(fail_result)
-        ch.basic_ack(delivery_tag=method.delivery_tag)
+        if save_to_db(fail_result):
+            update_job_status(job_id, 'failed', error_message=str(e)[:500])
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        else:
+            print(f"[Worker] 실패 결과 DB 저장도 실패 — 메시지 requeue: {url}")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         return
 
     if not article_body or len(article_body.strip()) < 50:
         # 본문이 너무 짧으면 정상적인 분석이 불가능 → 실패 처리
-        print(f"[Worker] 본문이 너무 짧거나 비어있음: {url}")
+        err_msg = "본문이 너무 짧거나 비어있음"
+        print(f"[Worker] {err_msg}: {url}")
         fail_result = {
             'url': url, 'title': title or '본문 부족', 'body': article_body or '',
             'content': 0, 'provocative': 0, 'source': 0,
             'total': 0, 'grade': '분석 불가', 'status': 'failed',
             'analyzed_at': time.strftime("%Y-%m-%d %H:%M:%S")
         }
-        save_to_db(fail_result)
-        ch.basic_ack(delivery_tag=method.delivery_tag)
+        if save_to_db(fail_result):
+            update_job_status(job_id, 'failed', error_message=err_msg)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        else:
+            print(f"[Worker] 실패 결과 DB 저장도 실패 — 메시지 requeue: {url}")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         return
 
     # ── 3가지 지표 분석 (상세 근거 데이터 함께 수집) ──
-    content, content_details = analyze_content_similarity(title, article_body)
-    provocative, provocative_details = analyze_provocative(title, article_body)
+    # 출처 분석을 먼저 수행: 자극성 분석에서 주요 언론사 면제 판단에 필요
     source, source_class = analyze_source(url, source_name)
+    content, content_details = analyze_content_similarity(title, article_body)
+    provocative, provocative_details = analyze_provocative(title, article_body, source_score=source)
     total = calculate_total_score(content, provocative, source)
     grade = get_grade(total)
 
@@ -713,12 +925,27 @@ def process_message(ch, method, properties, body):
         'source_name': f"{source_name}|{source_class}",  # "연합뉴스|주요 언론사" 형태
     }
 
-    save_to_db(result)
-
-    print(f"[Worker] 분석 완료: {title}")
-    print(f"         본문일치: {content:.1f} | 자극성: {provocative:.1f} | 출처: {source:.1f} | 종합: {total:.1f}점 ({grade})")
-
-    ch.basic_ack(delivery_tag=method.delivery_tag)
+    if save_to_db(result):
+        # 저장된 result_id를 가져와서 jobs에 연결
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=10)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM analysis_results WHERE url = ? ORDER BY id DESC LIMIT 1",
+                (url,)
+            )
+            row = cursor.fetchone()
+            conn.close()
+            rid = row[0] if row else None
+        except Exception:
+            rid = None
+        update_job_status(job_id, 'done', result_id=rid)
+        print(f"[Worker] 분석 완료: {title}")
+        print(f"         본문일치: {content:.1f} | 자극성: {provocative:.1f} | 출처: {source:.1f} | 종합: {total:.1f}점 ({grade})")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+    else:
+        print(f"[Worker] DB 저장 실패 — 메시지 requeue: {url}")
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
 def main():
     """Worker 메인: RabbitMQ에 연결하고 큐에서 메시지 기다리기"""
