@@ -9,39 +9,118 @@
 이 프로젝트는 Docker로 실행되기 때문에 **Python, Node.js 등을 따로 설치할 필요가 없습니다.**  
 아래 2가지만 준비하면 됩니다.
 
-### Docker Desktop 설치 (Mac 기준)
+### Docker Desktop 설치
+
+<details>
+<summary><b>Mac</b></summary>
+
+**방법 1) Homebrew로 설치 (권장)**
+
+```bash
+# Homebrew가 설치되어 있다면 한 줄로 끝
+brew install --cask docker
+```
+
+**방법 2) 공식 사이트에서 다운로드**
 
 1. [https://www.docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop) 에 접속합니다.
-2. **Download for Mac** 버튼을 클릭하여 설치 파일을 다운로드합니다.
+2. **Download for Mac** 버튼을 클릭합니다.
    - Apple Silicon (M1/M2/M3/M4) → **Mac with Apple chip** 선택
    - Intel Mac → **Mac with Intel chip** 선택
 3. 다운로드된 `.dmg` 파일을 열고, Docker 아이콘을 Applications 폴더로 드래그합니다.
 4. Applications에서 Docker를 실행합니다. (처음 실행 시 권한 허용 필요)
 5. 상단 메뉴바에 고래 아이콘이 나타나면 설치 완료입니다.
 
-설치 확인:
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+**1단계) WSL2 설치 (필수 선행 작업)**
+
+Docker Desktop은 Windows에서 WSL2(Windows Subsystem for Linux 2)를 백엔드로 사용합니다.  
+PowerShell을 **관리자 권한**으로 열고 아래 명령어를 실행합니다:
+
+```powershell
+wsl --install
+```
+
+실행 후 **컴퓨터를 재부팅**합니다.  
+재부팅 후 Ubuntu 터미널이 자동으로 열리면 사용자 이름과 비밀번호를 설정합니다.
+
+> **"가상화가 비활성화되어 있습니다" 에러가 나오면:**  
+> 컴퓨터를 재부팅하고 BIOS 설정에 진입합니다 (부팅 시 F2, F10, 또는 DEL 키).  
+> **Intel:** VT-x 또는 Intel Virtualization Technology → **Enabled**  
+> **AMD:** SVM Mode → **Enabled**  
+> 설정 변경 후 저장하고 재부팅합니다.
+
+**2단계) Docker Desktop 설치**
+
+1. [https://www.docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop) 에 접속합니다.
+2. **Download for Windows** 버튼을 클릭하여 설치 파일을 다운로드합니다.
+3. 다운로드된 `Docker Desktop Installer.exe`를 실행합니다.
+4. 설치 중 **"Use WSL 2 instead of Hyper-V"** 옵션이 체크되어 있는지 확인합니다.
+5. 설치 완료 후 Docker Desktop을 실행합니다.
+6. 작업 표시줄 트레이에 고래 아이콘이 나타나고 **"Docker Desktop is running"** 상태이면 완료입니다.
+
+</details>
+
+**설치 확인 (Mac/Windows 동일):**
 
 ```bash
 docker --version
 # Docker version 27.x.x 같은 출력이 나오면 성공
 ```
 
-### Git 설치 확인
+### Git 설치
+
+<details>
+<summary><b>Mac</b></summary>
 
 Mac에는 기본적으로 Git이 설치되어 있습니다. 터미널에서 확인해보세요:
 
 ```bash
 git --version
-# git version 2.x.x 같은 출력이 나오면 됩니다
 ```
 
-만약 설치되어 있지 않다면, 위 명령어를 입력하면 자동으로 Xcode Command Line Tools 설치 팝업이 뜹니다. **설치** 버튼을 누르면 됩니다.
+만약 설치되어 있지 않다면 아래 두 가지 방법 중 하나를 선택하세요:
+
+```bash
+# 방법 1) Xcode Command Line Tools (팝업이 뜨면 "설치" 클릭)
+xcode-select --install
+
+# 방법 2) Homebrew
+brew install git
+```
+
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+1. [https://git-scm.com/download/win](https://git-scm.com/download/win) 에 접속합니다.
+2. **"Click here to download"** 링크를 클릭하여 설치 파일을 다운로드합니다.
+3. 설치 파일을 실행하고 모든 옵션을 **기본값 그대로** 두고 Next를 눌러 설치합니다.
+4. 설치 완료 후 PowerShell 또는 명령 프롬프트를 **새로 열고** 확인합니다:
+
+```bash
+git --version
+```
+
+> **참고:** 설치 시 "Adjusting your PATH environment" 단계에서  
+> **"Git from the command line and also from 3rd-party software"** 가 선택되어 있는지 확인하세요.
+
+</details>
 
 ---
 
 ## 2. 프로젝트 다운로드
 
-터미널을 열고 아래 명령어를 순서대로 입력합니다:
+터미널을 열고 아래 명령어를 순서대로 입력합니다.
+
+**터미널 여는 방법:**
+- **Mac:** Spotlight(Cmd + Space) → "Terminal" 검색 → 실행
+- **Windows:** 시작 메뉴 → "PowerShell" 검색 → 실행 (또는 "명령 프롬프트")
 
 ```bash
 # 프로젝트 다운로드
@@ -57,7 +136,7 @@ cd SSAK3
 
 ## 3. 실행 방법
 
-### 프로젝트 시작
+### 프로젝트 시작 (Mac/Windows 동일)
 
 ```bash
 docker compose up --build
@@ -102,7 +181,9 @@ http://localhost:8501
 1. 상단의 **"뉴스 기사 분석 요청"** 입력창에 네이버 뉴스 URL을 붙여넣습니다.
    - 예: `https://n.news.naver.com/mnews/article/001/0014xxxxx`
 2. **"분석 요청"** 버튼을 클릭합니다.
-3. 잠시 기다린 후 (보통 5~10초) **페이지를 새로고침(F5)** 하면 결과가 나타납니다.
+3. 잠시 기다린 후 (보통 5~10초) **페이지를 새로고침** 하면 결과가 나타납니다.
+   - Mac: `Cmd + R`
+   - Windows: `F5` 또는 `Ctrl + R`
 
 ### 대량 분석
 
@@ -128,7 +209,7 @@ http://localhost:8501
 
 Worker는 기사를 분석하는 일꾼입니다. Worker를 늘리면 여러 기사를 동시에 분석할 수 있습니다.
 
-### Worker 3개로 실행
+### Worker 3개로 실행 (Mac/Windows 동일)
 
 ```bash
 docker compose up --build --scale worker=3
@@ -156,7 +237,7 @@ docker compose up --build --scale worker=5
 
 ## 6. 종료 방법
 
-### 터미널에서 종료
+### 터미널에서 종료 (Mac/Windows 동일)
 
 ```bash
 # Ctrl + C 를 눌러서 실행 중인 컨테이너를 정지한 뒤:
@@ -185,13 +266,44 @@ SSAK3 관련 컨테이너가 모두 **Exited** 상태이면 정상 종료된 것
 
 ### "port 5001 already in use" 에러
 
+<details>
+<summary><b>Mac인 경우</b></summary>
+
 Mac의 AirPlay 수신 기능이 5000번 포트를 사용하고 있을 수 있습니다.
 
 **해결 방법:**
 1. **시스템 설정** → **일반** → **AirDrop 및 Handoff** 로 이동
 2. **AirPlay 수신 모드** 를 **끔** 으로 변경
 
-또는 `docker-compose.yml`의 API 포트를 다른 번호로 변경해도 됩니다:
+</details>
+
+<details>
+<summary><b>Windows인 경우</b></summary>
+
+다른 프로그램이 5001번 포트를 사용하고 있을 수 있습니다.
+
+**1단계) 어떤 프로그램이 포트를 사용 중인지 확인:**
+
+```powershell
+netstat -ano | findstr :5001
+```
+
+출력 예시:
+```
+TCP    0.0.0.0:5001    0.0.0.0:0    LISTENING    12345
+```
+
+맨 끝의 숫자(12345)가 해당 프로세스의 PID입니다.
+
+**2단계) 해당 프로세스 종료:**
+
+```powershell
+taskkill /PID 12345 /F
+```
+
+</details>
+
+**공통 해결 방법:** `docker-compose.yml`의 API 포트를 다른 번호로 변경해도 됩니다:
 ```yaml
 # docker-compose.yml에서 이 부분을 수정
 ports:
@@ -214,6 +326,42 @@ ports:
 
 처음 실행 시 AI 모델(약 400MB)을 다운로드합니다. 인터넷 속도에 따라 5~10분 걸릴 수 있습니다.  
 `[Worker] AI 모델 로딩 중...` 메시지가 나온 후 오래 걸리더라도 기다려주세요.
+
+### Docker Desktop이 실행되지 않을 때 (Windows)
+
+<details>
+<summary><b>증상별 해결 방법</b></summary>
+
+**"WSL 2 installation is incomplete" 에러:**
+
+PowerShell을 **관리자 권한**으로 열고 실행합니다:
+```powershell
+wsl --update
+```
+실행 후 Docker Desktop을 다시 시작합니다.
+
+**"Hardware assisted virtualization and data execution protection must be enabled in the BIOS" 에러:**
+
+1. 컴퓨터를 재부팅합니다.
+2. 부팅 시 BIOS 진입 키를 누릅니다 (제조사별로 다름):
+   - **삼성/LG:** F2
+   - **HP:** F10
+   - **Dell/Lenovo:** F2 또는 DEL
+3. BIOS 설정에서 가상화 옵션을 찾아 활성화합니다:
+   - **Intel CPU:** `Intel Virtualization Technology (VT-x)` → **Enabled**
+   - **AMD CPU:** `SVM Mode` → **Enabled**
+4. 설정을 저장하고 재부팅합니다 (보통 F10 → Save & Exit).
+
+**"Docker Desktop - Unexpected WSL error" 에러:**
+
+PowerShell을 **관리자 권한**으로 열고 순서대로 실행합니다:
+```powershell
+wsl --shutdown
+wsl --update
+```
+실행 후 Docker Desktop을 다시 시작합니다.
+
+</details>
 
 ---
 
