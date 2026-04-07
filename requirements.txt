@@ -2,6 +2,8 @@ newspaper3k
 pika
 transformers
 torch
+scikit-learn
+numpy
 streamlit
 pandas
 flask

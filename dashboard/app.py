@@ -119,8 +119,6 @@ else:
     st.subheader("📊 등급별 분포")
     # 등급별 기사 수를 가로 막대 그래프로 표시
     grade_order = ["신뢰 가능", "주의 필요", "의심 기사", "신뢰 낮음"]
-    grade_colors = ["#2ecc71", "#f39c12", "#e74c3c", "#8b0000"]
-
     # 등급별 건수 집계 (없는 등급도 0으로 표시)
     grade_counts = df['grade'].value_counts()
     grade_data = pd.DataFrame({

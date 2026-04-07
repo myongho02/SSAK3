@@ -1,2 +1,9 @@
 # macOS 시스템 파일
 .DS_Store
+
+# Python 캐시 파일 — 바이트코드 컴파일 결과물 (git에 불필요)
+__pycache__/
+*.pyc
+
+# 분석 결과 DB — 로컬 실행 시 생성되는 데이터 (환경마다 다름)
+data/

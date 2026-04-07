@@ -36,15 +36,42 @@ def home():
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    """사용자가 URL을 보내면 큐에 넣기"""
+    """사용자가 URL을 보내면 큐에 넣기 (중복 URL 사전 체크 포함)"""
     data = request.get_json()
-    
+
     if not data or 'url' not in data:
         return jsonify({"error": "URL을 입력해주세요"}), 400
-    
+
     url = data['url']
+
+    # ── 중복 URL 사전 체크 ──
+    # Worker까지 가기 전에 API 단에서 미리 DB를 조회하여
+    # 이미 분석된 URL이면 큐에 넣지 않고 바로 기존 결과를 반환한다.
+    # → RabbitMQ 큐 부하 감소 + Worker의 불필요한 크롤링/AI 추론 방지
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM analysis_results WHERE url = ? ORDER BY analyzed_at DESC LIMIT 1",
+            (url,)
+        )
+        existing = cursor.fetchone()
+        conn.close()
+
+        if existing:
+            return jsonify({
+                "message": "이미 분석된 기사입니다.",
+                "url": url,
+                "result": dict(existing)
+            })
+    except Exception as e:
+        # DB 조회 실패 시(테이블 미생성 등)에는 무시하고 큐로 전달
+        # Worker가 첫 실행 시 테이블을 생성하므로, 그 전에는 조회가 실패할 수 있음
+        print(f"[API] 중복 체크 실패 (무시하고 큐 전달): {e}")
+
     send_to_queue(url)
-    
+
     return jsonify({
         "message": "분석 요청 완료! Worker가 처리 중입니다.",
         "url": url
