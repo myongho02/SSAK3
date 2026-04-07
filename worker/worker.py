@@ -54,9 +54,22 @@ def init_db():
             total_score REAL,
             grade TEXT,
             status TEXT DEFAULT 'done',
-            analyzed_at TEXT
+            analyzed_at TEXT,
+            matched_keywords TEXT,
+            detected_provocative TEXT,
+            ai_sentiment TEXT,
+            source_name TEXT
         )
     ''')
+
+    # ── 기존 DB에 새 컬럼이 없으면 추가 (마이그레이션) ──
+    # ALTER TABLE은 컬럼이 이미 있으면 에러가 나므로 try/except로 무시
+    for col in ['matched_keywords', 'detected_provocative', 'ai_sentiment', 'source_name']:
+        try:
+            cursor.execute(f"ALTER TABLE analysis_results ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass  # 이미 존재하는 컬럼 — 무시
+
     conn.commit()
     conn.close()
 
@@ -177,59 +190,51 @@ def analyze_content_similarity(title, body):
 
     [개선된 분석 방법]
     1. 코사인 유사도 (50%): 제목과 본문 첫 3문장(리드)만 비교
-       - 기존: 제목 vs 본문 전체 → 길이 차이로 유사도 0.05 이하
-       - 개선: 제목 vs 리드 3문장 → 핵심 내용끼리 비교하여 유사도 상승
     2. 키워드 매칭 (50%): 제목의 핵심 명사가 본문에 등장하는 비율
-       - 제목에서 핵심 명사를 추출 (조사 제거)
-       - 각 명사가 본문에 1번 이상 등장하면 매칭 성공
-       - 매칭률 = (매칭된 키워드 수 / 전체 키워드 수) × 100
 
-    참고: Horne & Adali, "This Just In: Fake News Packs a Lot in Title" (AAAI, 2017)
+    Returns: (최종 점수, 상세 정보 dict)
+        상세 정보: 제목 키워드, 매칭된 키워드, 코사인 유사도 원본값
     """
+    # ── 빈 입력 처리 ──
     if not title or not body:
-        return 0.0
+        return 0.0, {"keywords": [], "matched": [], "cosine_raw": 0.0}
 
     # ── 1단계: 코사인 유사도 (제목 vs 리드 3문장) ──
-    # 본문 전체가 아닌 첫 3문장만 추출하여 비교
-    # 뉴스 기사의 역피라미드 구조: 첫 문단에 핵심 내용 집중
     lead = extract_lead_sentences(body, n=3)
     if not lead:
-        lead = body[:200]  # 문장 분리 실패 시 앞 200자 사용
+        lead = body[:200]
 
     vectorizer = TfidfVectorizer()
     vectors = vectorizer.fit_transform([title, lead])
     cosine_score = cosine_similarity(vectors[0], vectors[1])[0][0]
-    # 0~1 범위를 0~100으로 스케일링
     cosine_score_scaled = cosine_score * 100
 
-    # ── 2단계: 키워드 매칭 (제목 핵심 명사 → 본문 등장 여부) ──
-    # 제목에서 핵심 명사를 추출하고, 각 명사가 본문에 등장하는지 확인
+    # ── 2단계: 키워드 매칭 ──
     keywords = extract_title_keywords(title)
 
     if not keywords:
-        # 키워드 추출 실패 시 코사인 유사도만 사용
-        return round(cosine_score_scaled, 1)
+        return round(cosine_score_scaled, 1), {
+            "keywords": [], "matched": [],
+            "cosine_raw": round(cosine_score, 4)
+        }
 
-    # 각 키워드가 본문에 1번 이상 등장하면 매칭 성공
-    matched = 0
-    for kw in keywords:
-        if kw in body:
-            matched += 1
-
-    # 매칭률: 매칭된 키워드 수 / 전체 키워드 수 (0.0 ~ 1.0)
-    match_ratio = matched / len(keywords)
-    # 0~1 범위를 0~100으로 스케일링
+    # 각 키워드가 본문에 등장하는지 확인하고, 매칭된 키워드 목록을 기록
+    matched_list = [kw for kw in keywords if kw in body]
+    match_ratio = len(matched_list) / len(keywords)
     keyword_score = match_ratio * 100
 
-    # ── 3단계: 두 점수를 결합 ──
-    # 코사인 유사도(50%) + 키워드 매칭(50%)
-    # 코사인 유사도가 낮아도 키워드가 본문에 다 있으면 높은 점수
+    # ── 3단계: 결합 ──
     final_score = (cosine_score_scaled * 0.5) + (keyword_score * 0.5)
-
-    # 0~100 범위로 클리핑
     final_score = max(0, min(100, final_score))
 
-    return round(final_score, 1)
+    # ── 상세 정보를 함께 반환 (대시보드에서 분석 근거로 표시) ──
+    details = {
+        "keywords": keywords,           # 제목에서 추출한 전체 키워드
+        "matched": matched_list,         # 본문에서 발견된 키워드
+        "cosine_raw": round(cosine_score, 4)  # 코사인 유사도 원본값 (0~1)
+    }
+
+    return round(final_score, 1), details
 
 def analyze_ai_sentiment(text):
     """AI 감성분석 보조 지표 — HuggingFace KR-FinBert-SC 모델 사용
@@ -237,15 +242,9 @@ def analyze_ai_sentiment(text):
     [동작 원리]
     - 기사 본문을 BERT 모델에 입력하여 긍정/부정/중립 확률값을 받음
     - 중립(neutral)일수록 객관적 보도 → 높은 점수 (신뢰도 높음)
-    - 부정(negative)이 강할수록 선정적·자극적 가능성 → 낮은 점수
-    - 긍정(positive)도 과도하면 홍보성 기사 가능성 → 중간 점수
 
-    [점수 산출 기준]
-    - 중립: 확률값 × 100 (최대 100점)
-    - 긍정: 확률값 × 70 (과도한 긍정은 홍보성 가능)
-    - 부정: (1 - 확률값) × 50 (부정적일수록 낮은 점수)
-
-    Returns: 0~100 사이의 감성 기반 신뢰도 점수
+    Returns: (점수, 상세 정보 dict)
+        상세 정보: 각 라벨별 확률값 (대시보드에서 근거로 표시)
     """
     try:
         # BERT 모델의 최대 입력 길이는 512 토큰이므로 앞부분만 사용
@@ -253,19 +252,28 @@ def analyze_ai_sentiment(text):
         label = result[0]['label']    # 'neutral', 'positive', 'negative'
         score = result[0]['score']    # 해당 라벨의 확률값 (0.0~1.0)
 
+        # ── 라벨별 확률값을 정리 (대시보드 표시용) ──
+        # 모델은 최고 확률 라벨 1개만 반환하므로, 나머지는 잔여 확률로 추정
+        # (정확한 3-class 확률은 모델 출력이 top-1만 제공하여 근사치 사용)
+        sentiment_detail = {"neutral": 0, "positive": 0, "negative": 0}
+        sentiment_detail[label] = round(score * 100, 1)
+        # 나머지 두 라벨에 잔여 확률을 균등 배분 (근사치)
+        remaining = round((1 - score) * 100, 1)
+        other_labels = [l for l in sentiment_detail if l != label]
+        for ol in other_labels:
+            sentiment_detail[ol] = round(remaining / 2, 1)
+
         if label == 'neutral':
-            # 중립적 보도일수록 객관적 → 높은 점수
-            return round(score * 100, 1)
+            final = round(score * 100, 1)
         elif label == 'positive':
-            # 긍정적이어도 과도하면 홍보성 가능 → 중간 점수
-            return round(score * 70, 1)
-        else:  # negative
-            # 부정적일수록 선정적·자극적 → 낮은 점수
-            return round((1 - score) * 50, 1)
+            final = round(score * 70, 1)
+        else:
+            final = round((1 - score) * 50, 1)
+
+        return final, sentiment_detail
     except Exception as e:
-        # 모델 추론 실패 시 중간값 반환 (분석 불가 상태)
         print(f"[Worker] AI 감성분석 오류: {e}")
-        return 50.0
+        return 50.0, {"neutral": 33.3, "positive": 33.3, "negative": 33.3}
 
 def analyze_provocative(title, body):
     """지표 2: 자극성 분석 (35%) — 단어 기반 분석 + AI 감성분석 결합
@@ -327,58 +335,63 @@ def analyze_provocative(title, body):
     }
 
     # ── 1단계: 제목과 본문에서 카테고리별 자극적 단어 검출 ──
-    # 제목의 자극적 단어는 가중치 2배 (헤드라인은 클릭 유도 의도가 더 강함)
     TITLE_MULTIPLIER = 2.0
+    weighted_hit_count = 0
 
-    weighted_hit_count = 0  # 가중치가 적용된 총 자극 점수
+    # 카테고리별 감지된 단어를 기록 (대시보드에서 근거로 표시)
+    # 한글 카테고리명 매핑: 대시보드에서 [과장] 역대급 형태로 표시
+    CATEGORY_LABELS = {
+        'exaggeration': '과장',
+        'hate': '혐오',
+        'sensational': '선정',
+        'fear': '공포',
+    }
+    detected_words = {}  # {"과장": ["역대급", "대박"], "선정": ["충격"]}
 
     for category, config in PROVOCATIVE_CATEGORIES.items():
-        cat_weight = config['weight']  # 카테고리 가중치
+        cat_weight = config['weight']
+        cat_label = CATEGORY_LABELS[category]
 
         for word in config['words']:
-            # 제목에서 검출된 횟수 (가중치 2배 적용)
             title_hits = len(re.findall(re.escape(word), title))
-            # 본문에서 검출된 횟수 (가중치 1배)
             body_hits = len(re.findall(re.escape(word), body))
 
-            # 카테고리 가중치 × (제목 2배 + 본문 1배)
+            if title_hits > 0 or body_hits > 0:
+                # 감지된 단어를 카테고리별로 기록
+                if cat_label not in detected_words:
+                    detected_words[cat_label] = []
+                detected_words[cat_label].append(word)
+
             weighted_hit_count += cat_weight * (title_hits * TITLE_MULTIPLIER + body_hits)
 
     # ── 2단계: 느낌표/물음표 연속 사용 감지 ──
-    # "충격!!!", "진짜???" 같은 과도한 문장부호는 자극성의 신호
-    # 2개 이상 연속된 느낌표/물음표를 감점 대상으로 카운트
-    punctuation_hits = len(re.findall(r'[!]{2,}', f"{title} {body}"))   # !! 이상
-    punctuation_hits += len(re.findall(r'[?]{2,}', f"{title} {body}"))  # ?? 이상
-
-    # 제목의 연속 문장부호는 가중치 2배
+    punctuation_hits = len(re.findall(r'[!]{2,}', f"{title} {body}"))
+    punctuation_hits += len(re.findall(r'[?]{2,}', f"{title} {body}"))
     title_punct = len(re.findall(r'[!]{2,}', title)) + len(re.findall(r'[?]{2,}', title))
-    # 본문 문장부호는 이미 포함되어 있으므로, 제목 추가분만 더함
     weighted_hit_count += title_punct * TITLE_MULTIPLIER + punctuation_hits
 
     # ── 3단계: 본문 길이 대비 비율로 정규화 ──
-    # 글자 수 기준으로 나누어 긴 기사가 불이익받지 않도록 함
-    # (짧은 기사에 자극적 단어가 몰려 있으면 비율이 높아짐)
     total_chars = len(title) + len(body)
     if total_chars == 0:
-        return 50.0
+        return 50.0, {"detected": {}, "ratio": 0, "ai": {}}
 
-    # 100글자당 자극 점수 비율로 정규화
     ratio_per_100 = (weighted_hit_count / total_chars) * 100
 
     # ── 4단계: 단어 기반 점수 산출 ──
-    # ratio_per_100이 0이면 100점 (자극성 없음)
-    # ratio_per_100이 3 이상이면 0점 (매우 자극적)
-    # 선형 감점: 100 - (비율 × 33.3)
     word_score = max(0, 100 - (ratio_per_100 * 33.3))
 
     # ── 5단계: AI 감성분석 점수와 결합 ──
-    # 단어 기반(50%) + AI 모델(50%)로 최종 자극성 점수 산출
-    # 단어 기반: 명시적 자극 표현 감지 (규칙 기반, 빠르고 예측 가능)
-    # AI 모델: 문맥 속 감성/논조 파악 (딥러닝 기반, 미묘한 뉘앙스 포착)
-    ai_score = analyze_ai_sentiment(body)
+    ai_score, ai_detail = analyze_ai_sentiment(body)
     final_score = (word_score * 0.5) + (ai_score * 0.5)
 
-    return round(final_score, 1)
+    # ── 상세 정보를 함께 반환 (대시보드에서 분석 근거로 표시) ──
+    details = {
+        "detected": detected_words,                   # 카테고리별 감지된 단어
+        "ratio": round(ratio_per_100, 2),              # 자극적 표현 비율 (%)
+        "ai": ai_detail                                # AI 감성분석 라벨별 확률
+    }
+
+    return round(final_score, 1), details
 
 def analyze_source(url, source_name=""):
     """지표 3: 출처 신뢰도 (20%) — 원본 언론사명 기반 신뢰도 판정
@@ -438,26 +451,24 @@ def analyze_source(url, source_name=""):
     ]
 
     # ── 1단계: 원본 언론사명으로 매칭 ──
-    # 크롤링 시 추출한 언론사명(예: "연합뉴스")과 목록을 비교
     if source_name:
         for name in MAJOR_SOURCES:
             if name in source_name or source_name in name:
-                return 85.0
+                return 85.0, "주요 언론사"
         for name in REGISTERED_SOURCES:
             if name in source_name or source_name in name:
-                return 65.0
+                return 65.0, "등록 매체"
 
-    # ── 2단계: 언론사명 매칭 실패 시 URL 도메인으로 폴백 ──
-    # 네이버 외 사이트에서 크롤링했거나, 언론사명 추출이 안 된 경우
+    # ── 2단계: URL 도메인으로 폴백 ──
     for name in MAJOR_SOURCES:
         if name in url:
-            return 85.0
+            return 85.0, "주요 언론사"
     for name in REGISTERED_SOURCES:
         if name in url:
-            return 65.0
+            return 65.0, "등록 매체"
 
     # ── 3단계: 출처 불명 ──
-    return 35.0
+    return 35.0, "출처 불명"
 
 def calculate_total_score(content, provocative, source):
     """종합 점수: 본문일치도(45%) + 자극성분석(35%) + 출처신뢰도(20%)"""
@@ -493,16 +504,22 @@ def save_to_db(result):
             conn = sqlite3.connect(DB_PATH, timeout=30)
             cursor = conn.cursor()
             # status: 분석 성공('done') 또는 크롤링 실패('failed')
+            # matched_keywords ~ source_name: 분석 근거 상세 데이터 (JSON 문자열)
             cursor.execute('''
                 INSERT INTO analysis_results
                 (url, title, body, content_score, provocative_score, source_score,
-                 total_score, grade, status, analyzed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 total_score, grade, status, analyzed_at,
+                 matched_keywords, detected_provocative, ai_sentiment, source_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 result['url'], result['title'], result['body'][:500],
                 result['content'], result['provocative'], result['source'],
                 result['total'], result['grade'], result.get('status', 'done'),
-                result['analyzed_at']
+                result['analyzed_at'],
+                result.get('matched_keywords', ''),
+                result.get('detected_provocative', ''),
+                result.get('ai_sentiment', ''),
+                result.get('source_name', '')
             ))
             conn.commit()
             return  # 성공하면 함수 종료
@@ -583,11 +600,10 @@ def process_message(ch, method, properties, body):
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    # 3가지 지표 분석
-    content = analyze_content_similarity(title, article_body)
-    provocative = analyze_provocative(title, article_body)
-    # 원본 언론사명(source_name)을 전달하여 정확한 출처 판정
-    source = analyze_source(url, source_name)
+    # ── 3가지 지표 분석 (상세 근거 데이터 함께 수집) ──
+    content, content_details = analyze_content_similarity(title, article_body)
+    provocative, provocative_details = analyze_provocative(title, article_body)
+    source, source_class = analyze_source(url, source_name)
     total = calculate_total_score(content, provocative, source)
     grade = get_grade(total)
 
@@ -600,7 +616,12 @@ def process_message(ch, method, properties, body):
         'source': source,
         'total': total,
         'grade': grade,
-        'analyzed_at': time.strftime("%Y-%m-%d %H:%M:%S")
+        'analyzed_at': time.strftime("%Y-%m-%d %H:%M:%S"),
+        # ── 분석 근거 상세 데이터 (JSON 문자열로 DB에 저장) ──
+        'matched_keywords': json.dumps(content_details, ensure_ascii=False),
+        'detected_provocative': json.dumps(provocative_details, ensure_ascii=False),
+        'ai_sentiment': json.dumps(provocative_details.get('ai', {}), ensure_ascii=False),
+        'source_name': f"{source_name}|{source_class}",  # "연합뉴스|주요 언론사" 형태
     }
 
     save_to_db(result)
