@@ -492,9 +492,12 @@ with st.container():
                         result = resp.json()
                         count = result.get("count", 0)
                         skipped = result.get("skipped", 0)
+                        failed = result.get("failed", 0)
                         msg = f"✅ {count}개 분석 요청 완료!"
                         if skipped > 0:
                             msg += f" (중복 {skipped}건 건너뜀)"
+                        if failed > 0:
+                            msg += f" (요청 생성 실패 {failed}건)"
                         st.success(msg)
                     else:
                         st.error(f"요청 실패: {resp.text}")
@@ -551,10 +554,12 @@ try:
 except Exception:
     pass
 
-# 자동 새로고침 활성화 시 5초 후 페이지 재실행
+# 자동 새로고침 활성화 시 JavaScript로 5초 후 페이지 재실행 (서버 블로킹 방지)
 if auto_refresh:
-    time.sleep(5)
-    st.rerun()
+    st.markdown(
+        '<meta http-equiv="refresh" content="5">',
+        unsafe_allow_html=True
+    )
 
 # ================================================================
 # 데이터가 없으면 안내 메시지 표시 후 종료

@@ -24,6 +24,8 @@ import requests
 from bs4 import BeautifulSoup
 
 # ========== 설정 ==========
+# 스크립트 위치 기준으로 프로젝트 루트를 자동 결정
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 API_URL = "http://localhost:5001"                 # 호스트에서 접근하는 API 주소
 DB_PATH = None                                     # Docker 볼륨 내 DB 경로 (아래에서 자동 탐색)
 RESULT_FILE = "benchmark_results.json"             # 결과 저장 파일
@@ -110,7 +112,7 @@ def reset_db():
          "conn.commit(); conn.close(); "
          "print('DB cleared')"],
         capture_output=True, text=True,
-        cwd="/Users/pespam/SSAK3"
+        cwd=PROJECT_ROOT
     )
 
 
@@ -133,7 +135,7 @@ def start_workers(n):
     subprocess.run(
         ["docker", "compose", "up", "-d", "--scale", f"worker={n}", "--no-recreate", "worker"],
         capture_output=True, text=True,
-        cwd="/Users/pespam/SSAK3"
+        cwd=PROJECT_ROOT
     )
     # Worker가 모델 로딩을 완료할 때까지 대기
     time.sleep(5)
@@ -145,7 +147,7 @@ def stop_workers():
     subprocess.run(
         ["docker", "compose", "stop", "worker"],
         capture_output=True, text=True,
-        cwd="/Users/pespam/SSAK3"
+        cwd=PROJECT_ROOT
     )
     # 완전히 정지될 때까지 잠시 대기
     time.sleep(2)
@@ -285,7 +287,7 @@ def main():
         "results": results
     }
 
-    output_path = os.path.join("/Users/pespam/SSAK3", RESULT_FILE)
+    output_path = os.path.join(PROJECT_ROOT, RESULT_FILE)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
     print(f"\n결과 저장: {output_path}")
@@ -295,7 +297,7 @@ def main():
         ["docker", "compose", "cp",
          output_path, "dashboard:/app/data/benchmark_results.json"],
         capture_output=True, text=True,
-        cwd="/Users/pespam/SSAK3"
+        cwd=PROJECT_ROOT
     )
     print("대시보드 컨테이너에 결과 복사 완료")
     print("\n대시보드 사이드바에서 '성능 측정' 메뉴를 확인하세요.")

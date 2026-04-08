@@ -601,10 +601,10 @@ def analyze_provocative(title, body, source_score=0):
                 weighted_hit_count += 1.2 * (title_hits * TITLE_MULTIPLIER + body_hits)
 
     # ── 2단계: 느낌표/물음표 연속 사용 감지 ──
-    punctuation_hits = len(re.findall(r'[!]{2,}', f"{title} {body}"))
-    punctuation_hits += len(re.findall(r'[?]{2,}', f"{title} {body}"))
+    # 제목과 본문을 분리하여 카운트 (제목은 가중치 적용, 본문은 1배)
     title_punct = len(re.findall(r'[!]{2,}', title)) + len(re.findall(r'[?]{2,}', title))
-    weighted_hit_count += title_punct * TITLE_MULTIPLIER + punctuation_hits
+    body_punct = len(re.findall(r'[!]{2,}', body)) + len(re.findall(r'[?]{2,}', body))
+    weighted_hit_count += title_punct * TITLE_MULTIPLIER + body_punct
 
     # ── 3단계: 본문 길이 대비 비율로 정규화 ──
     total_chars = len(title) + len(body)
@@ -799,6 +799,7 @@ def is_already_analyzed(url):
 
     Returns: True면 이미 분석 완료됨 → skip, False면 신규 또는 이전 실패 → 분석 진행
     """
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         cursor = conn.cursor()
@@ -807,11 +808,13 @@ def is_already_analyzed(url):
             (url,)
         )
         count = cursor.fetchone()[0]
-        conn.close()
         return count > 0
     except Exception:
         # DB 조회 실패 시에는 안전하게 분석 진행 (중복보다 누락이 더 나쁨)
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def update_job_status(job_id, status, error_message=None, result_id=None):
     """jobs 테이블의 해당 job을 상태 갱신한다.
@@ -822,6 +825,7 @@ def update_job_status(job_id, status, error_message=None, result_id=None):
     """
     if job_id is None:
         return
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         cursor = conn.cursor()
@@ -837,9 +841,11 @@ def update_job_status(job_id, status, error_message=None, result_id=None):
                 (status, now, error_message, result_id, job_id)
             )
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[Worker] jobs 상태 갱신 실패 (job_id={job_id}, status={status}): {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def process_message(ch, method, properties, body):
     """큐에서 메시지를 받으면 실행되는 함수.
@@ -927,6 +933,8 @@ def process_message(ch, method, properties, body):
 
     if save_to_db(result):
         # 저장된 result_id를 가져와서 jobs에 연결
+        rid = None
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH, timeout=10)
             cursor = conn.cursor()
@@ -935,10 +943,12 @@ def process_message(ch, method, properties, body):
                 (url,)
             )
             row = cursor.fetchone()
-            conn.close()
             rid = row[0] if row else None
         except Exception:
-            rid = None
+            pass
+        finally:
+            if conn:
+                conn.close()
         update_job_status(job_id, 'done', result_id=rid)
         print(f"[Worker] 분석 완료: {title}")
         print(f"         본문일치: {content:.1f} | 자극성: {provocative:.1f} | 출처: {source:.1f} | 종합: {total:.1f}점 ({grade})")
