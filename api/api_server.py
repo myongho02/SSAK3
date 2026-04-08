@@ -68,6 +68,7 @@ def create_job(url):
 
     Returns: job_id (정수) 또는 실패 시 None
     """
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
@@ -76,12 +77,13 @@ def create_job(url):
             (url, time.strftime("%Y-%m-%d %H:%M:%S"))
         )
         conn.commit()
-        job_id = cursor.lastrowid
-        conn.close()
-        return job_id
+        return cursor.lastrowid
     except Exception as e:
         print(f"[API] job 생성 실패: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
 
 
 def send_to_queue(job_id, url):
@@ -113,6 +115,7 @@ def check_existing_result(url):
     """이미 분석 완료(done)된 결과가 있는지 확인한다.
     Returns: dict(결과) 또는 None
     """
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row
@@ -123,16 +126,19 @@ def check_existing_result(url):
             (url,)
         )
         existing = cursor.fetchone()
-        conn.close()
         return dict(existing) if existing else None
     except Exception:
         return None
+    finally:
+        if conn:
+            conn.close()
 
 
 def check_pending_or_processing(url):
     """해당 URL이 현재 pending 또는 processing 상태인 job이 있는지 확인한다.
     Returns: True면 이미 큐에 있거나 처리 중
     """
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
@@ -141,10 +147,12 @@ def check_pending_or_processing(url):
             (url,)
         )
         count = cursor.fetchone()[0]
-        conn.close()
         return count > 0
     except Exception:
         return False
+    finally:
+        if conn:
+            conn.close()
 
 
 # ========== API 엔드포인트 ==========
@@ -199,6 +207,7 @@ def analyze():
     except Exception as e:
         print(f"[API] RabbitMQ 전송 실패: {e}")
         # 큐 전송 실패 시 job을 failed로 마킹
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH, timeout=10)
             conn.execute(
@@ -206,9 +215,11 @@ def analyze():
                 (f"큐 전송 실패: {str(e)[:200]}", job_id)
             )
             conn.commit()
-            conn.close()
         except Exception:
             pass
+        finally:
+            if conn:
+                conn.close()
         return jsonify({"error": f"메시지 큐 전송 실패: {str(e)}"}), 503
 
     return jsonify({
@@ -237,6 +248,7 @@ def analyze_bulk():
 
     queued_count = 0
     skipped_count = 0
+    failed_count = 0
 
     # done 상태 URL 집합
     done_urls = set()
@@ -277,6 +289,7 @@ def analyze_bulk():
 
         job_id = create_job(url)
         if job_id is None:
+            failed_count += 1
             continue
 
         message = json.dumps({
@@ -297,7 +310,8 @@ def analyze_bulk():
     return jsonify({
         "message": f"{queued_count}개 분석 요청 완료",
         "count": queued_count,
-        "skipped": skipped_count
+        "skipped": skipped_count,
+        "failed": failed_count
     })
 
 
@@ -306,22 +320,26 @@ def analyze_bulk():
 @app.route('/jobs', methods=['GET'])
 def get_jobs():
     """jobs 테이블에서 분석 작업 현황을 조회한다."""
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM jobs ORDER BY id DESC")
         rows = [dict(row) for row in cursor.fetchall()]
-        conn.close()
         return jsonify(rows)
     except Exception as e:
         print(f"[API] jobs 조회 실패: {e}")
         return jsonify([])
+    finally:
+        if conn:
+            conn.close()
 
 
 @app.route('/jobs/summary', methods=['GET'])
 def get_jobs_summary():
     """jobs 상태별 건수 요약을 반환한다."""
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
@@ -329,45 +347,53 @@ def get_jobs_summary():
             "SELECT status, COUNT(*) as cnt FROM jobs GROUP BY status"
         )
         summary = {row[0]: row[1] for row in cursor.fetchall()}
-        conn.close()
         return jsonify(summary)
     except Exception as e:
         print(f"[API] jobs 요약 조회 실패: {e}")
         return jsonify({})
+    finally:
+        if conn:
+            conn.close()
 
 
 @app.route('/results', methods=['GET'])
 def get_results():
     """분석 결과 전체 조회"""
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM analysis_results ORDER BY analyzed_at DESC")
         rows = [dict(row) for row in cursor.fetchall()]
-        conn.close()
         return jsonify(rows)
     except Exception as e:
         print(f"[API] 결과 조회 실패: {e}")
         return jsonify({"error": f"결과 조회 실패: {str(e)}"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 @app.route('/results/<int:result_id>', methods=['GET'])
 def get_result(result_id):
     """특정 분석 결과 조회"""
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM analysis_results WHERE id = ?", (result_id,))
         row = cursor.fetchone()
-        conn.close()
         if row:
             return jsonify(dict(row))
         return jsonify({"error": "결과를 찾을 수 없습니다"}), 404
     except Exception as e:
         print(f"[API] 결과 조회 실패 (id={result_id}): {e}")
         return jsonify({"error": f"DB 조회 실패: {str(e)}"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 if __name__ == "__main__":
