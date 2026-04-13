@@ -771,6 +771,65 @@ else:
 </div>""", unsafe_allow_html=True)
 
 # ================================================================
+# 성능 지표 섹션 — 처리 시간 기반 통계
+# processing_time 컬럼에 기록된 기사별 처리 소요 시간(초)을 기반으로
+# 평균 처리 시간, 총 처리 시간, 초당 처리 건수(throughput)를 계산한다.
+# ================================================================
+st.markdown('<div class="section-title">⚡ 처리 성능 지표</div>', unsafe_allow_html=True)
+
+# processing_time 컬럼이 있고, 유효한 값이 1건 이상인 경우에만 표시
+if 'processing_time' in done_df.columns:
+    # None이나 NaN을 제외한 유효한 처리 시간만 추출
+    _valid_times = done_df['processing_time'].dropna()
+    _valid_times = _valid_times[_valid_times > 0]
+else:
+    _valid_times = pd.Series(dtype=float)
+
+if len(_valid_times) > 0:
+    _avg_time = _valid_times.mean()       # 평균 처리 시간 (초)
+    _total_time = _valid_times.sum()      # 총 처리 시간 (초)
+    _min_time = _valid_times.min()        # 최소 처리 시간 (초)
+    _max_time = _valid_times.max()        # 최대 처리 시간 (초)
+    _count = len(_valid_times)            # 처리 건수
+    # throughput: 초당 처리 건수 = 총 건수 / 총 시간
+    _throughput = _count / _total_time if _total_time > 0 else 0
+
+    # 3개 카드로 핵심 지표 표시
+    _pc1, _pc2, _pc3 = st.columns(3)
+    with _pc1:
+        st.markdown(f"""<div class="summary-card" style="background: linear-gradient(135deg, #FFF7ED, #FFEDD5);">
+<div class="icon">⏱️</div>
+<div class="value" style="color: #EA580C;">{_avg_time:.1f}초</div>
+<div class="label">평균 처리 시간</div>
+</div>""", unsafe_allow_html=True)
+    with _pc2:
+        # 총 처리 시간: 60초 이상이면 분:초로 표시
+        if _total_time >= 60:
+            _total_display = f"{int(_total_time // 60)}분 {_total_time % 60:.0f}초"
+        else:
+            _total_display = f"{_total_time:.1f}초"
+        st.markdown(f"""<div class="summary-card" style="background: linear-gradient(135deg, #F5F3FF, #EDE9FE);">
+<div class="icon">🕐</div>
+<div class="value" style="color: #7C3AED;">{_total_display}</div>
+<div class="label">총 처리 시간 ({_count}건)</div>
+</div>""", unsafe_allow_html=True)
+    with _pc3:
+        st.markdown(f"""<div class="summary-card" style="background: linear-gradient(135deg, #ECFDF5, #D1FAE5);">
+<div class="icon">🚀</div>
+<div class="value" style="color: #059669;">{_throughput:.2f}</div>
+<div class="label">초당 처리 건수 (throughput)</div>
+</div>""", unsafe_allow_html=True)
+
+    # 상세 수치 요약
+    st.markdown(f"""<div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; padding: 12px 20px; margin: 8px 0 24px 0; font-size: 13px; color: #475569;">
+최소 <b>{_min_time:.1f}초</b> · 최대 <b>{_max_time:.1f}초</b> · 평균 <b>{_avg_time:.1f}초</b> · Worker 3개 병렬 처리 기준
+</div>""", unsafe_allow_html=True)
+else:
+    st.markdown("""<div style="text-align: center; padding: 24px; color: #94A3B8; font-size: 14px;">
+처리 시간 데이터가 아직 없습니다. 기사를 분석하면 성능 지표가 표시됩니다.
+</div>""", unsafe_allow_html=True)
+
+# ================================================================
 # 기사별 상세 결과 — 카드 형태 + 원형 게이지 + 프로그레스 바
 # ================================================================
 st.markdown('<div class="section-title">📋 기사별 분석 결과</div>', unsafe_allow_html=True)

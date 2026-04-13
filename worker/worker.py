@@ -103,6 +103,14 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # 이미 존재하는 컬럼 — 무시
 
+    # ── processing_time 컬럼: 기사 1건 처리에 걸린 시간 (초 단위, 소수점) ──
+    # 크롤링 + 분석 + DB 저장까지의 전체 소요 시간을 기록한다.
+    # 대시보드에서 평균 처리 시간, 초당 처리량(throughput) 계산에 사용
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN processing_time REAL")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재하는 컬럼 — 무시
+
     # ── jobs 테이블: 분석 요청의 생명주기를 추적 ──
     # API가 job을 생성(pending)하고, Worker가 상태를 갱신(processing→done/failed)한다.
     # 대시보드는 jobs 기준으로 진행률을 표시한다.
@@ -131,17 +139,73 @@ def init_db():
 
 # ========== 뉴스 크롤링 ==========
 
+# ── HTTP 세션 재사용 (성능 최적화) ──
+# requests.Session()을 Worker 시작 시 1번만 생성하고 모든 크롤링에 재사용한다.
+# 매번 새 TCP 연결을 맺지 않고 기존 연결을 재활용(Keep-Alive)하므로
+# 같은 서버에 여러 번 요청할 때 연결 수립 시간을 절약한다.
+http_session = requests.Session()
+http_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/91.0 Mobile Safari/537.36"
+})
+
+# ── 크롤링 설정 상수 ──
+CRAWL_TIMEOUT = 10          # HTTP 응답 대기 최대 10초 (무한 대기 방지)
+CRAWL_MAX_RETRIES = 2       # 크롤링 내부 재시도 최대 2회 (네트워크 일시 오류 대응)
+
+
+def convert_to_mobile_url(url):
+    """네이버 뉴스 URL을 모바일 버전으로 변환한다.
+
+    모바일 페이지(m.news.naver.com)는 PC 페이지보다 HTML이 가볍고
+    JS 렌더링 의존도가 낮아 크롤링 속도가 빨라진다.
+
+    변환 규칙:
+    - n.news.naver.com → m.news.naver.com
+    - news.naver.com → m.news.naver.com
+    - /mnews/ → /mnews/ (이미 모바일이면 그대로)
+
+    Returns: 변환된 URL 문자열
+    """
+    # 이미 모바일 URL이면 그대로 반환
+    if "m.news.naver.com" in url:
+        return url
+    # n.news.naver.com/mnews/... 또는 n.news.naver.com/article/... 패턴
+    url = url.replace("n.news.naver.com", "m.news.naver.com")
+    url = url.replace("news.naver.com", "m.news.naver.com")
+    # 중복 치환 방지: m.m.news... 가 되지 않도록
+    url = url.replace("m.m.news", "m.news")
+    return url
+
+
 def crawl_naver_news(url):
     """네이버 뉴스 전용 크롤러 — BS4로 기사 본문 + 원본 언론사명 추출
 
     newspaper3k는 네이버 뉴스의 JS 렌더링 본문을 못 가져오므로,
     requests + BeautifulSoup으로 직접 추출한다.
+    모바일 URL로 변환하여 가벼운 HTML을 받아 처리 속도를 높인다.
 
     Returns: (제목, 본문, 원본 언론사명)
     """
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(url, headers=headers, timeout=10)
-    resp.raise_for_status()
+    # 모바일 URL로 변환 (HTML이 가볍고 크롤링이 빠름)
+    mobile_url = convert_to_mobile_url(url)
+    print(f"{WORKER_TAG} 모바일 URL 사용: {mobile_url}")
+
+    # ── 크롤링 내부 재시도 (최대 CRAWL_MAX_RETRIES회) ──
+    # 네트워크 일시 오류(타임아웃, 연결 끊김 등)에 대응
+    # 큐 레벨 재시도(retry_to_queue)와 별개로, HTTP 요청 자체를 재시도
+    last_error = None
+    for attempt in range(1, CRAWL_MAX_RETRIES + 1):
+        try:
+            resp = http_session.get(mobile_url, timeout=CRAWL_TIMEOUT)
+            resp.raise_for_status()
+            break  # 성공 시 루프 탈출
+        except Exception as e:
+            last_error = e
+            if attempt < CRAWL_MAX_RETRIES:
+                print(f"{WORKER_TAG} 크롤링 재시도 {attempt}/{CRAWL_MAX_RETRIES}: {mobile_url}")
+                time.sleep(1)  # 1초 대기 후 재시도
+            else:
+                raise last_error  # 최종 실패 — 상위 호출자에게 예외 전파
 
     soup = BeautifulSoup(resp.text, 'html.parser')
 
@@ -176,10 +240,11 @@ def crawl_naver_news(url):
 
     return title, body, source_name
 
+
 def crawl_article(url):
     """URL에 따라 적절한 크롤러를 선택하여 기사를 가져온다.
 
-    - 네이버 뉴스: BS4 직접 파싱 (JS 렌더링 우회) + 원본 언론사명 추출
+    - 네이버 뉴스: 모바일 URL 변환 + BS4 직접 파싱 + 내부 재시도
     - 기타 사이트: newspaper3k 범용 크롤러 사용 + URL에서 도메인 추출
 
     Returns: (제목, 본문, 원본 언론사명)
@@ -778,8 +843,8 @@ def save_to_db(result):
                 (url, title, body, content_score, provocative_score, source_score,
                  total_score, grade, status, analyzed_at,
                  matched_keywords, detected_provocative, ai_sentiment, source_name,
-                 worker_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 worker_id, processing_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 result['url'], result['title'], result['body'][:500],
                 result['content'], result['provocative'], result['source'],
@@ -789,7 +854,8 @@ def save_to_db(result):
                 result.get('detected_provocative', ''),
                 result.get('ai_sentiment', ''),
                 result.get('source_name', ''),
-                WORKER_ID   # 현재 Worker의 ID를 DB에 함께 저장
+                WORKER_ID,                              # 현재 Worker의 ID
+                result.get('processing_time', None)     # 처리 소요 시간 (초)
             ))
             conn.commit()
             return True  # 저장 성공
@@ -936,6 +1002,10 @@ def process_message(ch, method, properties, body):
     job_id = data.get('job_id')  # 구버전 메시지는 job_id가 없을 수 있음
     retry_count = data.get('retry_count', 0)  # 현재까지의 재시도 횟수
 
+    # ── 처리 시간 측정 시작 ──
+    # time.perf_counter()는 time.time()보다 정밀한 성능 측정용 타이머
+    _start_time = time.perf_counter()
+
     # 어떤 Worker가 어떤 기사를 처리하는지 로그에 명시
     retry_info = f" (재시도 {retry_count}/{MAX_RETRY_COUNT})" if retry_count > 0 else ""
     print(f"{WORKER_TAG} 기사 분석 시작: {url} (job_id={job_id}){retry_info}")
@@ -975,6 +1045,9 @@ def process_message(ch, method, properties, body):
     total = calculate_total_score(content, provocative, source)
     grade = get_grade(total)
 
+    # ── 처리 시간 측정 완료 ──
+    _elapsed = time.perf_counter() - _start_time
+
     result = {
         'url': url,
         'title': title,
@@ -990,6 +1063,7 @@ def process_message(ch, method, properties, body):
         'detected_provocative': json.dumps(provocative_details, ensure_ascii=False),
         'ai_sentiment': json.dumps(provocative_details.get('ai', {}), ensure_ascii=False),
         'source_name': f"{source_name}|{source_class}",  # "연합뉴스|주요 언론사" 형태
+        'processing_time': round(_elapsed, 2),  # 처리 소요 시간 (초, 소수점 2자리)
     }
 
     if save_to_db(result):
@@ -1007,7 +1081,7 @@ def process_message(ch, method, properties, body):
         except Exception:
             rid = None
         update_job_status(job_id, 'done', result_id=rid)
-        print(f"{WORKER_TAG} 분석 완료: {title}")
+        print(f"{WORKER_TAG} 처리 완료: {_elapsed:.1f}초 — {title}")
         print(f"         본문일치: {content:.1f} | 자극성: {provocative:.1f} | 출처: {source:.1f} | 종합: {total:.1f}점 ({grade})")
         ch.basic_ack(delivery_tag=method.delivery_tag)
     else:

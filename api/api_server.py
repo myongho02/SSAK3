@@ -67,6 +67,14 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # 이미 존재하는 컬럼
 
+    # ── processing_time 컬럼: 기사 1건 처리 소요 시간 (초) ──
+    # Worker가 크롤링~분석~저장까지 걸린 시간을 기록
+    # 대시보드 성능 지표(평균 처리 시간, throughput)에 사용
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN processing_time REAL")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재하는 컬럼
+
     conn.commit()
     conn.close()
 
