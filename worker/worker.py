@@ -4,6 +4,7 @@ import sqlite3
 import os
 import re
 import time
+import socket       # 컨테이너 hostname(=컨테이너 ID) 조회용
 import requests
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
@@ -24,12 +25,29 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 # [최적화] pipeline() 대신 tokenizer + model을 직접 로딩
 # - torch.no_grad()로 그래디언트 계산 비활성화 → 메모리 절감 + 속도 향상
 # - 배치 추론 가능 → 여러 기사를 한번에 처리할 때 효율적
-print("[Worker] AI 보조지표 모델 로딩 중... (처음에 1~2분 걸릴 수 있음)")
+# ========== Worker ID 및 컨테이너 정보 설정 ==========
+# docker-compose.yml에서 WORKER_ID 환경변수를 주입받아 로그에 사용한다.
+# 예: WORKER_ID=1 → 로그에 "[Worker-1]"로 표시
+# 환경변수가 없으면 기본값 "0"을 사용 (로컬 단독 실행 시)
+WORKER_ID = os.environ.get("WORKER_ID", "0")
+WORKER_TAG = f"[Worker-{WORKER_ID}]"  # 로그 출력에 사용할 태그
+
+# ── 컨테이너 ID(hostname) 조회 ──
+# Docker 컨테이너 안에서 hostname은 컨테이너 ID(12자리 해시)가 된다.
+# 이를 통해 각 Worker가 독립적인 컴퓨터(컨테이너)에서 실행되고 있음을 증명한다.
+# 예: "Worker-1 (컨테이너: a3f8b2c1d4e5) 시작"
+CONTAINER_ID = socket.gethostname()
+print(f"{'='*60}")
+print(f"[시스템] {WORKER_TAG} 시작 — 컨테이너 ID: {CONTAINER_ID}")
+print(f"[시스템] 독립 컨테이너에서 실행 중 (분산 병렬 처리)")
+print(f"{'='*60}")
+
+print(f"{WORKER_TAG} AI 보조지표 모델 로딩 중... (처음에 1~2분 걸릴 수 있음)")
 MODEL_NAME = "snunlp/KR-FinBert-SC"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
 model.eval()  # 추론 모드 전환 — dropout 등 학습 전용 레이어 비활성화
-print("[Worker] AI 보조지표 모델 로딩 완료!")
+print(f"{WORKER_TAG} AI 보조지표 모델 로딩 완료!")
 
 # ========== DB 초기화 ==========
 DB_PATH = "/app/data/results.db"
@@ -76,6 +94,14 @@ def init_db():
             cursor.execute(f"ALTER TABLE analysis_results ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
             pass  # 이미 존재하는 컬럼 — 무시
+
+    # ── worker_id 컬럼: 어떤 Worker가 이 기사를 분석했는지 기록 ──
+    # 대시보드에서 "Worker-1이 처리", "Worker-2가 처리" 등으로 표시하기 위해 사용
+    # 부하 분산 시각화(Worker별 처리 건수 막대 그래프)에도 활용
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN worker_id TEXT")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재하는 컬럼 — 무시
 
     # ── jobs 테이블: 분석 요청의 생명주기를 추적 ──
     # API가 job을 생성(pending)하고, Worker가 상태를 갱신(processing→done/failed)한다.
@@ -417,7 +443,7 @@ def analyze_ai_sentiment(text):
 
         return final, sentiment_detail
     except Exception as e:
-        print(f"[Worker] AI 감성분석 오류: {e}")
+        print(f"{WORKER_TAG} AI 감성분석 오류: {e}")
         return 50.0, {"neutral": 33.3, "positive": 33.3, "negative": 33.3}
 
 def analyze_ai_sentiment_batch(texts):
@@ -445,7 +471,7 @@ def analyze_ai_sentiment_batch(texts):
     try:
         all_probs = _run_sentiment_model(leads)
     except Exception as e:
-        print(f"[Worker] 배치 감성분석 오류: {e}")
+        print(f"{WORKER_TAG} 배치 감성분석 오류: {e}")
         return [(50.0, {"neutral": 33.3, "positive": 33.3, "negative": 33.3})] * len(texts)
 
     # 각 기사별 점수·상세 정보 생성
@@ -746,12 +772,14 @@ def save_to_db(result):
             cursor = conn.cursor()
             # status: 분석 성공('done') 또는 크롤링 실패('failed')
             # matched_keywords ~ source_name: 분석 근거 상세 데이터 (JSON 문자열)
+            # worker_id: 이 기사를 처리한 Worker의 ID (분산 처리 추적용)
             cursor.execute('''
                 INSERT INTO analysis_results
                 (url, title, body, content_score, provocative_score, source_score,
                  total_score, grade, status, analyzed_at,
-                 matched_keywords, detected_provocative, ai_sentiment, source_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 matched_keywords, detected_provocative, ai_sentiment, source_name,
+                 worker_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 result['url'], result['title'], result['body'][:500],
                 result['content'], result['provocative'], result['source'],
@@ -760,7 +788,8 @@ def save_to_db(result):
                 result.get('matched_keywords', ''),
                 result.get('detected_provocative', ''),
                 result.get('ai_sentiment', ''),
-                result.get('source_name', '')
+                result.get('source_name', ''),
+                WORKER_ID   # 현재 Worker의 ID를 DB에 함께 저장
             ))
             conn.commit()
             return True  # 저장 성공
@@ -768,15 +797,15 @@ def save_to_db(result):
         except sqlite3.OperationalError as e:
             # "database is locked" 에러: 다른 Worker가 쓰기 중
             if "locked" in str(e) and attempt < max_retries:
-                print(f"[Worker] DB 잠금 감지, {attempt}/{max_retries} 재시도 (3초 후)")
+                print(f"{WORKER_TAG} DB 잠금 감지, {attempt}/{max_retries} 재시도 (3초 후)")
                 time.sleep(3)
             else:
                 # 3회 모두 실패하거나 다른 종류의 에러면 로그 출력
-                print(f"[Worker] DB 저장 실패 (url={result['url']}): {e}")
+                print(f"{WORKER_TAG} DB 저장 실패 (url={result['url']}): {e}")
                 return False  # 저장 실패
 
         except Exception as e:
-            print(f"[Worker] DB 저장 중 예상치 못한 오류 (url={result['url']}): {e}")
+            print(f"{WORKER_TAG} DB 저장 중 예상치 못한 오류 (url={result['url']}): {e}")
             return False  # 저장 실패
 
         finally:
@@ -784,7 +813,7 @@ def save_to_db(result):
             if conn:
                 conn.close()
 
-    print(f"[Worker] DB 저장 최종 실패 — {max_retries}회 재시도 모두 실패 (url={result['url']})")
+    print(f"{WORKER_TAG} DB 저장 최종 실패 — {max_retries}회 재시도 모두 실패 (url={result['url']})")
     return False
 
 # ========== 메인: 큐에서 기사 꺼내서 분석 ==========
@@ -839,65 +868,103 @@ def update_job_status(job_id, status, error_message=None, result_id=None):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"[Worker] jobs 상태 갱신 실패 (job_id={job_id}, status={status}): {e}")
+        print(f"{WORKER_TAG} jobs 상태 갱신 실패 (job_id={job_id}, status={status}): {e}")
+
+# ========== 장애 대응: 재시도 로직 ==========
+# 크롤링이 실패하면 바로 포기하지 않고, 최대 MAX_RETRY_COUNT회까지 재시도한다.
+# 재시도 횟수는 메시지 JSON에 retry_count 필드로 추적한다.
+# 재시도 시 메시지를 다시 큐에 넣으면, 다른 Worker가 가져갈 수도 있다.
+# → 한 Worker가 죽어도 다른 Worker가 이어서 처리하는 장애 대응 구조
+MAX_RETRY_COUNT = 3  # 최대 재시도 횟수
+
+def retry_to_queue(ch, method, data, reason):
+    """크롤링/분석 실패 시 재시도를 위해 메시지를 다시 큐에 넣는다.
+
+    동작 방식:
+    1. 현재 메시지의 retry_count를 확인
+    2. MAX_RETRY_COUNT 미만이면 retry_count를 1 증가시켜 다시 큐에 발행
+    3. MAX_RETRY_COUNT 이상이면 최종 실패로 처리 (DB에 failed 기록)
+
+    이렇게 하면 한 Worker가 크래시해도 RabbitMQ가 메시지를 다른 Worker에게
+    자동으로 재분배하므로, 시스템 전체가 멈추지 않는다.
+    """
+    current_retry = data.get('retry_count', 0)
+    job_id = data.get('job_id')
+    url = data['url']
+
+    if current_retry < MAX_RETRY_COUNT:
+        # ── 재시도 가능: 카운트를 올려서 큐에 다시 넣기 ──
+        data['retry_count'] = current_retry + 1
+        print(f"{WORKER_TAG} 재시도 {data['retry_count']}/{MAX_RETRY_COUNT}: {url} (사유: {reason})")
+
+        # 현재 메시지를 ACK 처리한 뒤 새 메시지로 발행
+        # (basic_nack + requeue=True를 쓰면 같은 Worker가 반복 수신할 수 있으므로,
+        #  명시적으로 ACK + 재발행하여 다른 Worker에게도 기회를 준다)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        ch.basic_publish(
+            exchange='',
+            routing_key='news_queue',
+            body=json.dumps(data),
+            properties=pika.BasicProperties(delivery_mode=2)  # 메시지 영속화
+        )
+    else:
+        # ── 최대 재시도 횟수 초과: 최종 실패 처리 ──
+        print(f"{WORKER_TAG} 최대 재시도 횟수({MAX_RETRY_COUNT}회) 초과 — 최종 실패: {url}")
+        fail_result = {
+            'url': url, 'title': f'실패 ({reason})', 'body': reason[:500],
+            'content': 0, 'provocative': 0, 'source': 0,
+            'total': 0, 'grade': '분석 불가', 'status': 'failed',
+            'analyzed_at': time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        save_to_db(fail_result)
+        update_job_status(job_id, 'failed', error_message=f"{reason} (재시도 {MAX_RETRY_COUNT}회 실패)")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
 
 def process_message(ch, method, properties, body):
-    """큐에서 메시지를 받으면 실행되는 함수.
-    메시지 형식: {"job_id": 123, "url": "https://..."}
-    job_id가 없는 구버전 메시지도 호환 처리한다.
+    """큐에서 메시지를 받으면 실행되는 콜백 함수.
+
+    ── 장애 대응 핵심 ──
+    auto_ack=False 설정으로, Worker가 처리를 완료한 뒤에만 ACK를 보낸다.
+    → Worker가 처리 도중 죽으면 RabbitMQ가 메시지를 다른 Worker에게 재분배.
+    → 이것이 "한 Worker가 죽어도 시스템이 계속 돌아가는" 핵심 메커니즘.
+
+    메시지 형식: {"job_id": 123, "url": "https://...", "retry_count": 0}
     """
     data = json.loads(body)
     url = data['url']
     job_id = data.get('job_id')  # 구버전 메시지는 job_id가 없을 수 있음
-    print(f"[Worker] 분석 시작: {url} (job_id={job_id})")
+    retry_count = data.get('retry_count', 0)  # 현재까지의 재시도 횟수
+
+    # 어떤 Worker가 어떤 기사를 처리하는지 로그에 명시
+    retry_info = f" (재시도 {retry_count}/{MAX_RETRY_COUNT})" if retry_count > 0 else ""
+    print(f"{WORKER_TAG} 기사 분석 시작: {url} (job_id={job_id}){retry_info}")
 
     # job 상태를 processing으로 갱신
     update_job_status(job_id, 'processing')
 
     # ── 중복 분석 방지: 이미 분석 완료(done)된 URL이면 건너뛰기 ──
     if is_already_analyzed(url):
-        print(f"[Worker] 이미 분석된 기사입니다 (skip): {url}")
+        print(f"{WORKER_TAG} 이미 분석된 기사입니다 (skip): {url}")
         update_job_status(job_id, 'done')
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    # 실제 뉴스 크롤링 — 제목, 본문, 원본 언론사명을 함께 추출
+    # ── 실제 뉴스 크롤링 — 실패 시 재시도 큐에 넣기 ──
     try:
         title, article_body, source_name = crawl_article(url)
     except Exception as e:
-        # 크롤링 실패 시 status='failed'로 DB에 기록
-        # 사용자가 대시보드에서 실패 원인을 확인할 수 있도록 에러 메시지 저장
-        print(f"[Worker] 크롤링 실패: {url} — {e}")
-        fail_result = {
-            'url': url, 'title': '크롤링 실패', 'body': str(e)[:500],
-            'content': 0, 'provocative': 0, 'source': 0,
-            'total': 0, 'grade': '분석 불가', 'status': 'failed',
-            'analyzed_at': time.strftime("%Y-%m-%d %H:%M:%S")
-        }
-        if save_to_db(fail_result):
-            update_job_status(job_id, 'failed', error_message=str(e)[:500])
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-        else:
-            print(f"[Worker] 실패 결과 DB 저장도 실패 — 메시지 requeue: {url}")
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        # 크롤링 실패 → 재시도 로직으로 전달
+        # MAX_RETRY_COUNT 미만이면 다시 큐에 넣고, 초과하면 최종 실패 처리
+        print(f"{WORKER_TAG} 크롤링 실패: {url} — {e}")
+        retry_to_queue(ch, method, data, reason=f"크롤링 실패: {str(e)[:200]}")
         return
 
     if not article_body or len(article_body.strip()) < 50:
-        # 본문이 너무 짧으면 정상적인 분석이 불가능 → 실패 처리
+        # 본문이 너무 짧으면 정상적인 분석이 불가능 → 재시도 로직으로 전달
         err_msg = "본문이 너무 짧거나 비어있음"
-        print(f"[Worker] {err_msg}: {url}")
-        fail_result = {
-            'url': url, 'title': title or '본문 부족', 'body': article_body or '',
-            'content': 0, 'provocative': 0, 'source': 0,
-            'total': 0, 'grade': '분석 불가', 'status': 'failed',
-            'analyzed_at': time.strftime("%Y-%m-%d %H:%M:%S")
-        }
-        if save_to_db(fail_result):
-            update_job_status(job_id, 'failed', error_message=err_msg)
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-        else:
-            print(f"[Worker] 실패 결과 DB 저장도 실패 — 메시지 requeue: {url}")
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        print(f"{WORKER_TAG} {err_msg}: {url}")
+        retry_to_queue(ch, method, data, reason=err_msg)
         return
 
     # ── 3가지 지표 분석 (상세 근거 데이터 함께 수집) ──
@@ -940,17 +1007,31 @@ def process_message(ch, method, properties, body):
         except Exception:
             rid = None
         update_job_status(job_id, 'done', result_id=rid)
-        print(f"[Worker] 분석 완료: {title}")
+        print(f"{WORKER_TAG} 분석 완료: {title}")
         print(f"         본문일치: {content:.1f} | 자극성: {provocative:.1f} | 출처: {source:.1f} | 종합: {total:.1f}점 ({grade})")
         ch.basic_ack(delivery_tag=method.delivery_tag)
     else:
-        print(f"[Worker] DB 저장 실패 — 메시지 requeue: {url}")
+        print(f"{WORKER_TAG} DB 저장 실패 — 메시지 requeue: {url}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
 def main():
-    """Worker 메인: RabbitMQ에 연결하고 큐에서 메시지 기다리기"""
+    """Worker 메인: RabbitMQ에 연결하고 큐에서 메시지를 소비한다.
+
+    ── 분산 병렬 처리의 핵심 동작 원리 ──
+    1. 모든 Worker가 동일한 큐(news_queue)에 연결
+    2. RabbitMQ가 Round-Robin 방식으로 메시지를 균등 분배
+    3. prefetch_count=1: 한 번에 1개씩만 가져와서 처리 → 느린 Worker에 몰리지 않음
+    4. auto_ack=False: Worker가 완료 후 ACK → 처리 중 크래시되면 자동 재분배
+
+    ── 확장성 ──
+    Worker를 5개, 10개로 늘려도 이 코드를 수정할 필요 없음.
+    docker-compose.yml에 worker-4, worker-5를 추가하면 자동으로 큐에 연결되어
+    부하가 분산된다. 이것이 메시지 큐 기반 분산 처리의 핵심 장점.
+    """
     init_db()
 
+    # ── RabbitMQ 연결 (재시도 루프) ──
+    # RabbitMQ가 아직 준비되지 않았을 수 있으므로 연결될 때까지 대기
     while True:
         try:
             connection = pika.BlockingConnection(
@@ -958,15 +1039,24 @@ def main():
             )
             break
         except pika.exceptions.AMQPConnectionError:
-            print("[Worker] RabbitMQ 연결 대기 중... 5초 후 재시도")
+            print(f"{WORKER_TAG} RabbitMQ 연결 대기 중... 5초 후 재시도")
             time.sleep(5)
 
     channel = connection.channel()
+    # durable=True: RabbitMQ가 재시작되어도 큐가 유지됨
     channel.queue_declare(queue='news_queue', durable=True)
+    # prefetch_count=1: 한 Worker가 1건을 처리 완료해야 다음 메시지를 받음
+    # → 처리 속도가 느린 Worker에 메시지가 쌓이지 않아 부하가 균등하게 분배됨
     channel.basic_qos(prefetch_count=1)
+    # auto_ack=False (기본값): 명시적 ACK 전까지 메시지가 큐에 남아있음
+    # → Worker 장애 시 RabbitMQ가 다른 Worker에게 메시지를 재분배하는 핵심 설정
     channel.basic_consume(queue='news_queue', on_message_callback=process_message)
 
-    print("[Worker] 대기 중... 큐에서 기사를 기다리고 있습니다.")
+    print(f"{'='*60}")
+    print(f"[시스템] {WORKER_TAG} 연결 완료! (컨테이너: {CONTAINER_ID})")
+    print(f"[시스템] 큐 대기 중... Worker를 추가해도 코드 수정 없이 자동 확장됩니다.")
+    print(f"[시스템] 장애 대응: auto_ack=False, 재시도 최대 {MAX_RETRY_COUNT}회")
+    print(f"{'='*60}")
     channel.start_consuming()
 
 if __name__ == "__main__":

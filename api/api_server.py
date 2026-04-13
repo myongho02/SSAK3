@@ -59,6 +59,14 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ── worker_id 컬럼: 어떤 Worker가 해당 기사를 분석했는지 추적 ──
+    # Worker가 분석 결과를 저장할 때 자신의 WORKER_ID를 함께 기록한다.
+    # 대시보드에서 Worker별 처리 현황을 시각화하는 데 사용
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN worker_id TEXT")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재하는 컬럼
+
     conn.commit()
     conn.close()
 

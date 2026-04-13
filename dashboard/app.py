@@ -672,6 +672,105 @@ st.markdown("""<div style="background: #F0FDFA; border: 1px solid #99F6E4; borde
 </div>""", unsafe_allow_html=True)
 
 # ================================================================
+# Worker별 처리 현황 — 분산 병렬 처리 부하 분산 시각화
+# 각 Worker가 몇 건의 기사를 분석했는지 막대 그래프로 표시한다.
+# RabbitMQ의 Round-Robin 분배가 균등하게 이루어지는지 시각적으로 확인 가능.
+# worker_id 컬럼이 없는 구버전 데이터는 "미분류"로 표시한다.
+# ================================================================
+st.markdown('<div class="section-title">🖥️ Worker별 처리 현황 (분산 병렬 처리)</div>', unsafe_allow_html=True)
+
+# ── docker-compose.yml에 정의된 Worker 목록 (항상 표시할 Worker ID들) ──
+# Worker-1, Worker-2, Worker-3은 처리 건수가 0이더라도 항상 그래프에 표시한다.
+# 나중에 Worker를 추가하면 이 리스트만 확장하면 된다.
+_known_workers = ['1', '2', '3']
+
+# worker_id 컬럼이 있는지 확인 후 집계
+if 'worker_id' in done_df.columns:
+    # worker_id가 비어있거나 None인 경우 "미분류"로 대체
+    _worker_col = done_df['worker_id'].fillna('미분류').replace('', '미분류')
+    _worker_counts = _worker_col.value_counts()
+else:
+    # worker_id 컬럼 자체가 없는 경우 (마이그레이션 전 DB)
+    _worker_counts = pd.Series({'미분류': len(done_df)} if len(done_df) > 0 else {})
+
+# ── 알려진 Worker들을 0건으로 미리 채워 넣기 ──
+# 처리 건수가 없는 Worker도 항상 그래프에 표시되도록 보장
+for _kw in _known_workers:
+    if _kw not in _worker_counts.index:
+        _worker_counts[_kw] = 0
+# 숫자 Worker ID 먼저(1,2,3 순), 그 외("미분류" 등)는 뒤에 정렬
+_worker_counts = _worker_counts.reindex(
+    sorted(_worker_counts.index, key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else 999))
+)
+
+# Worker가 하나도 없으면 안내 메시지 표시
+if _worker_counts.empty or len(done_df) == 0:
+    st.markdown("""<div style="text-align: center; padding: 24px; color: #94A3B8; font-size: 14px;">
+아직 Worker가 처리한 기사가 없습니다.
+</div>""", unsafe_allow_html=True)
+else:
+    # ── 막대 그래프 색상 (Worker별로 다른 색상) ──
+    _worker_colors = {
+        '1': '#0D9488',   # 틸 (Worker-1)
+        '2': '#3B82F6',   # 블루 (Worker-2)
+        '3': '#8B5CF6',   # 퍼플 (Worker-3)
+        '4': '#F59E0B',   # 앰버 (Worker-4, 확장 대비)
+        '5': '#EF4444',   # 레드 (Worker-5, 확장 대비)
+    }
+    # 최대 건수 (0이면 1로 설정하여 나눗셈 에러 방지)
+    _max_worker_count = max(_worker_counts.max(), 1)
+    # 전체 done 건수 (0이면 비율 계산 시 0%로 표시)
+    _total_done = len(done_df) if len(done_df) > 0 else 1
+
+    for _wid, _wcount in _worker_counts.items():
+        _wid_str = str(_wid)
+        # Worker ID에 맞는 색상 선택 (없으면 기본 회색)
+        _wcolor = _worker_colors.get(_wid_str, '#94A3B8')
+        _wbar_width = (_wcount / _max_worker_count) * 100
+        # 전체 대비 이 Worker의 처리 비율 (%)
+        _wpct = (_wcount / _total_done) * 100
+
+        # Worker 이름 표시: 숫자면 "Worker-N", 아니면 그대로
+        _wlabel = f"Worker-{_wid_str}" if _wid_str.isdigit() else _wid_str
+
+        # 0건인 Worker는 막대 없이 텍스트만 회색으로 표시
+        if _wcount == 0:
+            st.markdown(f"""<div style="display: flex; align-items: center; margin: 10px 0;">
+<span style="width: 100px; font-size: 14px; font-weight: 600; color: #334155;">{_wlabel}</span>
+<div style="flex: 1; background: #F1F5F9; border-radius: 6px; height: 32px; overflow: hidden; margin: 0 12px; display: flex; align-items: center; padding-left: 12px;">
+<span style="color: #94A3B8; font-size: 13px; font-weight: 600;">0건 (대기 중)</span>
+</div></div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""<div style="display: flex; align-items: center; margin: 10px 0;">
+<span style="width: 100px; font-size: 14px; font-weight: 600; color: #334155;">{_wlabel}</span>
+<div style="flex: 1; background: #F1F5F9; border-radius: 6px; height: 32px; overflow: hidden; margin: 0 12px;">
+<div style="width: {_wbar_width}%; background: {_wcolor}; height: 100%; border-radius: 6px; display: flex; align-items: center; padding-left: 12px; min-width: 50px;">
+<span style="color: #fff; font-size: 13px; font-weight: 700;">{_wcount}건 ({_wpct:.1f}%)</span>
+</div></div></div>""", unsafe_allow_html=True)
+
+    # ── 부하 균등성 요약 메시지 ──
+    # 표준편차가 작을수록 균등하게 분배된 것
+    if len(_worker_counts) > 1:
+        _mean_count = _worker_counts.mean()
+        _std_count = _worker_counts.std()
+        # 변동계수(CV)로 균등성 판단: 작을수록 균등
+        _cv = (_std_count / _mean_count * 100) if _mean_count > 0 else 0
+        if _cv < 15:
+            _balance_msg = "✅ 부하가 매우 균등하게 분배되고 있습니다 (RabbitMQ Round-Robin)"
+            _balance_color = "#0D9488"
+        elif _cv < 30:
+            _balance_msg = "⚠️ 부하가 비교적 균등하게 분배되고 있습니다"
+            _balance_color = "#F59E0B"
+        else:
+            _balance_msg = "❌ 부하 분배가 불균등합니다 — Worker 상태를 확인하세요"
+            _balance_color = "#EF4444"
+
+        st.markdown(f"""<div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; padding: 12px 20px; margin: 8px 0 24px 0; font-size: 13px;">
+<span style="color: {_balance_color}; font-weight: 600;">{_balance_msg}</span>
+<span style="color: #94A3B8; margin-left: 12px;">평균 {_mean_count:.1f}건 · 표준편차 {_std_count:.1f}</span>
+</div>""", unsafe_allow_html=True)
+
+# ================================================================
 # 기사별 상세 결과 — 카드 형태 + 원형 게이지 + 프로그레스 바
 # ================================================================
 st.markdown('<div class="section-title">📋 기사별 분석 결과</div>', unsafe_allow_html=True)
@@ -770,12 +869,19 @@ else:
 <div class="evidence-row">최종 출처 점수: <b>{source_s:.1f}점</b></div>
 </div>"""
 
+        # ── 처리한 Worker 정보 표시용 ──
+        # worker_id 컬럼에서 해당 기사를 분석한 Worker 번호를 가져온다
+        _card_wid = str(row.get('worker_id', '') or '')
+        _card_worker_label = f"Worker-{_card_wid}" if _card_wid and _card_wid != 'nan' else ""
+        # Worker 라벨이 있으면 카드 메타 라인에 표시
+        _card_worker_html = f'&nbsp;&nbsp;|&nbsp;&nbsp;<span style="background:#EFF6FF;color:#1E40AF;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:600;">{_card_worker_label} 처리</span>' if _card_worker_label else ""
+
         # ── 기사 카드 HTML 조립 — 왼쪽 정렬 필수 (Markdown 코드 블록 방지) ──
         card_html = f"""<div class="article-card">
 <div class="grade-bar" style="background: {color};"></div>
 <div class="card-body">
 <div class="card-title">{row['title']}</div>
-<div class="card-meta">{row['url']}&nbsp;&nbsp;|&nbsp;&nbsp;{row['analyzed_at']}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: {color};">{grade}</span></div>
+<div class="card-meta">{row['url']}&nbsp;&nbsp;|&nbsp;&nbsp;{row['analyzed_at']}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: {color};">{grade}</span>{_card_worker_html}</div>
 <div style="display: flex; gap: 32px; align-items: center; margin-top: 12px;">
 <div style="flex-shrink: 0; min-width: 130px;">
 {build_gauge_svg(score, grade, color)}</div>
