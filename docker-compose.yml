@@ -2,8 +2,15 @@ services:
   rabbitmq:
     image: rabbitmq:management
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      # H3-3 운영 보안: 관리 콘솔(15672)은 외부 접근 금지를 위해 127.0.0.1에 바인딩.
+      # 5672는 내부 컨테이너끼리만 통신하므로 expose로 충분 (외부 차단).
+      - "127.0.0.1:15672:15672"
+    expose:
+      - "5672"
+    environment:
+      # 운영 보안: guest 기본 계정 외 운영용 자격증명을 환경변수로 (선택)
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-guest}
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_running"]
       interval: 10s
@@ -19,6 +26,16 @@ services:
         condition: service_healthy
     volumes:
       - shared-data:/app/data
+    environment:
+      # 운영 환경 변수 (.env에서 오버라이드 가능)
+      - SSAK3_DB_PATH=/app/data/results.db
+      - SSAK3_SESSION_TTL=${SSAK3_SESSION_TTL:-604800}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/').read()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ========== 분산 병렬 처리 Worker 구성 ==========
   # 3개의 Worker가 동일한 RabbitMQ 큐(news_queue)에 연결되어,
@@ -63,6 +80,31 @@ services:
       - "8501:8501"
     volumes:
       - shared-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8501/_stcore/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ========== H1 ngrok — 외부 접속 터널 (옵션) ==========
+  # 학회 시연 등 외부 사용자에게 HTTPS URL을 즉시 노출하고 싶을 때 사용.
+  # 사용법:
+  #   1) https://dashboard.ngrok.com 에서 회원가입(무료) → Authtoken 복사
+  #   2) 프로젝트 루트에 .env 파일 생성: NGROK_AUTHTOKEN=your_token
+  #   3) docker compose --profile tunnel up -d
+  #   4) http://localhost:4040 에서 발급된 외부 URL 확인 (https://abc-123.ngrok-free.app)
+  # 일반 가동 시에는 이 서비스가 시작되지 않음 (profile로 격리).
+  ngrok:
+    image: ngrok/ngrok:latest
+    profiles: ["tunnel"]
+    command: http dashboard:8501
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    ports:
+      - "127.0.0.1:4040:4040"   # ngrok inspector (로컬에서만)
+    depends_on:
+      - dashboard
 
 volumes:
   shared-data:

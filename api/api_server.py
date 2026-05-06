@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from collections import deque, defaultdict
 import pika
 import json
 import sqlite3
@@ -8,11 +9,74 @@ import secrets
 import bcrypt
 
 app = Flask(__name__)
-DB_PATH = "/app/data/results.db"
+# H3-4 환경 변수 분리: DB 경로, 세션 TTL을 환경에서 오버라이드 가능
+DB_PATH = os.environ.get("SSAK3_DB_PATH", "/app/data/results.db")
 
 # ========== Phase G — 사용자 격리 설정 ==========
-# 세션 토큰 만료 시간 (초). 7일.
-SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
+# 세션 토큰 만료 시간 (초). 기본 7일.
+SESSION_TTL_SECONDS = int(os.environ.get("SSAK3_SESSION_TTL", 7 * 24 * 60 * 60))
+
+
+# ========== H3-1 Rate Limit (인메모리 슬라이딩 윈도우) ==========
+# 운영 수준: 무차별 회원가입/로그인/분석 요청 차단.
+# IP+endpoint별 윈도우 추적. 무거운 의존성(Redis) 없이 가벼운 in-memory.
+_rate_buckets = defaultdict(deque)
+RATE_LIMITS = {
+    'auth_register': (5, 60),    # 분당 5회
+    'auth_login':    (10, 60),   # 분당 10회
+    'analyze':       (60, 60),   # 분당 60회 (분석은 인증 후라 좀 더 너그럽게)
+    'analyze_bulk':  (10, 60),
+    'change_password': (3, 60),
+    'delete_account':  (3, 60),
+}
+
+
+def check_rate_limit(name):
+    """endpoint별 분당 제한. 초과 시 (False, retry_after_sec) 반환.
+    키는 IP+endpoint+(인증된 user_id가 있으면 그것). 익명 사용자도 IP 기반.
+    """
+    if name not in RATE_LIMITS:
+        return True, 0
+    max_calls, window = RATE_LIMITS[name]
+    # remote IP — Streamlit/대시보드는 같은 docker 네트워크에서 호출되므로
+    # X-Forwarded-For가 있으면 그 IP를 우선 사용
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr or 'unknown').split(',')[0].strip()
+    user_id = auth_user(request)
+    key = f"{name}:{ip}:{user_id or 'anon'}"
+
+    now = time.time()
+    bucket = _rate_buckets[key]
+    # 윈도우 밖 항목 제거
+    while bucket and bucket[0] < now - window:
+        bucket.popleft()
+    if len(bucket) >= max_calls:
+        retry_after = int(window - (now - bucket[0]))
+        return False, max(1, retry_after)
+    bucket.append(now)
+    return True, 0
+
+
+def rate_limit_response(name):
+    """rate limit 위반 시 표준 429 응답."""
+    ok, retry = check_rate_limit(name)
+    if not ok:
+        resp = jsonify({"error": f"요청이 너무 많습니다. {retry}초 뒤에 다시 시도해주세요."})
+        resp.status_code = 429
+        resp.headers['Retry-After'] = str(retry)
+        return resp
+    return None
+
+
+# ========== H3-2 보안 헤더 (운영 수준) ==========
+@app.after_request
+def add_security_headers(resp):
+    """모든 응답에 기본 보안 헤더 부착."""
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
+    resp.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    # HSTS: HTTPS 노출 시 강제 (ngrok 등 HTTPS 터널 사용 시 효과)
+    resp.headers.setdefault('Strict-Transport-Security', 'max-age=15552000; includeSubDomains')
+    return resp
 
 
 # ========== DB 초기화 ==========
@@ -210,6 +274,8 @@ def auth_register():
     """회원가입. {username, password} JSON 입력.
     username 중복 체크 후 bcrypt로 해싱하여 저장.
     """
+    rl = rate_limit_response('auth_register')
+    if rl is not None: return rl
     data = request.get_json() or {}
     username = (data.get('username') or '').strip()
     password = data.get('password') or ''
@@ -218,8 +284,10 @@ def auth_register():
         return jsonify({"error": "username과 password가 필요합니다"}), 400
     if len(username) < 3 or len(username) > 30:
         return jsonify({"error": "username은 3~30자여야 합니다"}), 400
-    if len(password) < 6:
-        return jsonify({"error": "password는 최소 6자 이상이어야 합니다"}), 400
+    # H2-5: 비밀번호 강도 검증 (운영 수준)
+    pw_ok, pw_err = is_password_strong(password)
+    if not pw_ok:
+        return jsonify({"error": pw_err}), 400
 
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -252,6 +320,8 @@ def auth_login():
     """로그인. {username, password} JSON 입력.
     인증 성공 시 새 세션 토큰을 발급한다.
     """
+    rl = rate_limit_response('auth_login')
+    if rl is not None: return rl
     data = request.get_json() or {}
     username = (data.get('username') or '').strip()
     password = data.get('password') or ''
@@ -294,6 +364,108 @@ def auth_logout():
     except Exception:
         pass
     return jsonify({"message": "로그아웃 완료"})
+
+
+def is_password_strong(password):
+    """[H2-5] 비밀번호 강도 검증 (운영 수준).
+    최소 8자, 영문/숫자 모두 포함.
+    """
+    if not password or len(password) < 8:
+        return False, "비밀번호는 최소 8자 이상이어야 합니다"
+    has_alpha = any(c.isalpha() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+    if not (has_alpha and has_digit):
+        return False, "비밀번호는 영문과 숫자를 모두 포함해야 합니다"
+    return True, None
+
+
+@app.route('/auth/change_password', methods=['POST'])
+def auth_change_password():
+    """[H2-1] 비밀번호 변경. 현재 비번 검증 후 새 비번으로 갱신.
+    성공 시 기존 세션은 모두 무효화 (다른 디바이스 자동 로그아웃)
+    """
+    rl = rate_limit_response('change_password')
+    if rl is not None: return rl
+    user_id = auth_user(request)
+    if not user_id:
+        return jsonify({"error": "로그인이 필요합니다"}), 401
+    data = request.get_json() or {}
+    current_pw = data.get('current_password') or ''
+    new_pw = data.get('new_password') or ''
+
+    ok, err = is_password_strong(new_pw)
+    if not ok:
+        return jsonify({"error": err}), 400
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        if not row or not verify_password(current_pw, row[0]):
+            conn.close()
+            return jsonify({"error": "현재 비밀번호가 올바르지 않습니다"}), 401
+        cursor.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (hash_password(new_pw), user_id),
+        )
+        # 보안: 모든 기존 세션 무효화 (다른 디바이스 강제 로그아웃)
+        cursor.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        # 새 세션 발급해서 현재 사용자는 자동 로그인 유지
+        new_token = create_session(user_id)
+        return jsonify({
+            "message": "비밀번호 변경 완료. 다른 디바이스는 자동 로그아웃됩니다.",
+            "token": new_token,
+        })
+    except Exception as e:
+        return jsonify({"error": f"변경 실패: {str(e)}"}), 500
+
+
+@app.route('/auth/delete_account', methods=['POST'])
+def auth_delete_account():
+    """[H2-2] 회원 탈퇴 — 본인 데이터(분석 결과/jobs/세션/사용자) 모두 삭제.
+    GDPR 수준: 비밀번호 재확인 후 영구 삭제.
+    """
+    rl = rate_limit_response('delete_account')
+    if rl is not None: return rl
+    user_id = auth_user(request)
+    if not user_id:
+        return jsonify({"error": "로그인이 필요합니다"}), 401
+    data = request.get_json() or {}
+    password = data.get('password') or ''
+    confirm = data.get('confirm', False)
+
+    if not confirm:
+        return jsonify({"error": "탈퇴를 진행하려면 confirm=true를 보내주세요"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, password_hash FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "사용자를 찾을 수 없습니다"}), 404
+        if not verify_password(password, row[1]):
+            conn.close()
+            return jsonify({"error": "비밀번호가 올바르지 않습니다"}), 401
+        username = row[0]
+        # CASCADE 삭제: 본인 분석 결과 / jobs / 세션 / 사용자 본체
+        cursor.execute("DELETE FROM analysis_results WHERE user_id = ?", (user_id,))
+        deleted_results = cursor.rowcount
+        cursor.execute("DELETE FROM jobs WHERE user_id = ?", (user_id,))
+        deleted_jobs = cursor.rowcount
+        cursor.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({
+            "message": f"회원 '{username}' 탈퇴 완료. 분석 결과 {deleted_results}건과 작업 {deleted_jobs}건이 영구 삭제되었습니다.",
+        })
+    except Exception as e:
+        return jsonify({"error": f"탈퇴 실패: {str(e)}"}), 500
 
 
 @app.route('/auth/me', methods=['GET'])
@@ -448,6 +620,8 @@ def analyze():
     - pending/processing: 이미 처리 중이므로 대기 안내
     - failed: 재시도 허용 (새 job 생성)
     """
+    rl = rate_limit_response('analyze')
+    if rl is not None: return rl
     data = request.get_json()
     if not data or 'url' not in data:
         return jsonify({"error": "URL을 입력해주세요"}), 400
@@ -511,6 +685,8 @@ def analyze_bulk():
     - pending/processing → skip
     - failed/신규 → 새 job 생성 후 큐에 전달
     """
+    rl = rate_limit_response('analyze_bulk')
+    if rl is not None: return rl
     data = request.get_json()
     if not data or 'urls' not in data:
         return jsonify({"error": "urls 리스트를 입력해주세요"}), 400

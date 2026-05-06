@@ -276,9 +276,13 @@ elif st.session_state.get("guest_mode"):
 st.sidebar.markdown("---")
 
 # ── 페이지 네비게이션 ──
+# 회원만 "내 통계", "계정 설정" 페이지 노출
+_pages = ["📊 분석 대시보드", "🏎️ 성능 측정"]
+if auth_user_info():
+    _pages += ["📈 내 통계", "⚙️ 계정 설정"]
 page_mode = st.sidebar.radio(
     "페이지 선택",
-    ["📊 분석 대시보드", "🏎️ 성능 측정"],
+    _pages,
     label_visibility="collapsed"
 )
 st.sidebar.markdown("---")
@@ -642,6 +646,138 @@ SSAK3 — 규칙 기반 분석 + AI 보조지표 결합 뉴스 신뢰도 점수�
 </div>""", unsafe_allow_html=True)
 
     st.stop()  # 성능 측정 페이지에서는 여기서 종료 — 아래의 분석 대시보드는 렌더링하지 않음
+
+
+# ================================================================
+# H2-4 내 통계 페이지 — 회원 전용 (총/평균/등급 분포/도메인 TOP)
+# ================================================================
+if page_mode == "📈 내 통계":
+    st.markdown('<div class="section-title">📈 내 분석 통계</div>', unsafe_allow_html=True)
+    _u = auth_user_info()
+    st.caption(f"@{_u['username']} 님의 분석 이력 통계")
+
+    _df = load_data()
+    _df = _df[_df['status'] == 'done'] if not _df.empty else _df
+
+    if _df.empty:
+        st.info("아직 분석한 기사가 없습니다. 메인 대시보드에서 URL을 분석해보세요.")
+        st.stop()
+
+    # 통계 카드
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("총 분석 건수", f"{len(_df)}건")
+    c2.metric("평균 신뢰도", f"{_df['total_score'].mean():.1f}점")
+    c3.metric("신뢰 가능", f"{(_df['total_score'] >= 80).sum()}건")
+    c4.metric("의심/낮음", f"{(_df['total_score'] < 60).sum()}건")
+
+    st.markdown("---")
+
+    # 도메인 TOP 10
+    st.markdown("### 자주 분석한 도메인 TOP 10")
+    from urllib.parse import urlparse as _up
+    _df_domain = _df.copy()
+    _df_domain['domain'] = _df_domain['url'].apply(
+        lambda u: _up(u).netloc.replace('www.', '') if isinstance(u, str) else '-'
+    )
+    _top = _df_domain['domain'].value_counts().head(10)
+    if not _top.empty:
+        st.bar_chart(_top)
+    else:
+        st.write("(데이터 부족)")
+
+    st.markdown("---")
+
+    # H2-3 CSV 다운로드
+    st.markdown("### 📥 분석 이력 내보내기 (CSV)")
+    _csv_cols = ['analyzed_at', 'url', 'title', 'total_score', 'grade',
+                 'content_score', 'provocative_score', 'source_score', 'source_name']
+    _csv_df = _df[[c for c in _csv_cols if c in _df.columns]].copy()
+    _csv_bytes = _csv_df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        "📥 내 분석 이력 CSV 다운로드",
+        data=_csv_bytes,
+        file_name=f"ssak3_history_{_u['username']}_{time.strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+    )
+    st.caption("Excel에서 한글이 깨지지 않도록 UTF-8 with BOM으로 인코딩됩니다.")
+
+    st.stop()
+
+
+# ================================================================
+# H2-1 + H2-2 계정 설정 페이지 — 비밀번호 변경 / 회원 탈퇴
+# ================================================================
+if page_mode == "⚙️ 계정 설정":
+    st.markdown('<div class="section-title">⚙️ 계정 설정</div>', unsafe_allow_html=True)
+    _u = auth_user_info()
+    st.caption(f"로그인 계정: **@{_u['username']}** (user_id={_u['user_id']})")
+
+    st.markdown("---")
+
+    # H2-1 비밀번호 변경
+    st.markdown("### 🔐 비밀번호 변경")
+    st.caption("새 비밀번호는 **영문+숫자 포함 8자 이상**이어야 합니다. 변경 후 다른 디바이스는 자동 로그아웃됩니다.")
+    with st.form("change_pw_form"):
+        cur_pw = st.text_input("현재 비밀번호", type="password", key="cur_pw")
+        new_pw = st.text_input("새 비밀번호", type="password", key="new_pw")
+        new_pw2 = st.text_input("새 비밀번호 확인", type="password", key="new_pw2")
+        if st.form_submit_button("비밀번호 변경"):
+            if new_pw != new_pw2:
+                st.error("❌ 새 비밀번호가 일치하지 않습니다")
+            else:
+                try:
+                    r = requests.post(
+                        f"{API_URL}/auth/change_password",
+                        json={"current_password": cur_pw, "new_password": new_pw},
+                        headers=auth_headers(),
+                        timeout=10,
+                    )
+                    if r.status_code == 200:
+                        # 새 토큰으로 자동 갱신
+                        new_token = r.json().get("token")
+                        if new_token:
+                            st.session_state["auth_token"] = new_token
+                        st.success("✅ 비밀번호 변경 완료. 다른 디바이스는 자동 로그아웃되었습니다.")
+                    else:
+                        st.error(f"❌ {r.json().get('error', '변경 실패')}")
+                except Exception as e:
+                    st.error(f"❌ API 연결 실패: {e}")
+
+    st.markdown("---")
+
+    # H2-2 회원 탈퇴
+    st.markdown("### ❌ 회원 탈퇴")
+    st.warning("⚠️ 탈퇴 시 본인의 모든 분석 이력과 작업 기록이 **영구 삭제**되며 복구할 수 없습니다.")
+    with st.expander("회원 탈퇴 진행"):
+        with st.form("delete_account_form"):
+            del_pw = st.text_input("비밀번호 재확인", type="password", key="del_pw")
+            confirm_text = st.text_input(
+                f"탈퇴를 확인하려면 본인 아이디 '{_u['username']}'를 정확히 입력하세요",
+                key="del_confirm",
+            )
+            if st.form_submit_button("회원 탈퇴 (영구)"):
+                if confirm_text != _u['username']:
+                    st.error("❌ 아이디가 일치하지 않습니다")
+                else:
+                    try:
+                        r = requests.post(
+                            f"{API_URL}/auth/delete_account",
+                            json={"password": del_pw, "confirm": True},
+                            headers=auth_headers(),
+                            timeout=10,
+                        )
+                        if r.status_code == 200:
+                            st.success(r.json().get("message", "탈퇴 완료"))
+                            st.session_state.pop("auth_token", None)
+                            st.session_state.pop("auth_user", None)
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {r.json().get('error', '탈퇴 실패')}")
+                    except Exception as e:
+                        st.error(f"❌ API 연결 실패: {e}")
+
+    st.stop()
 
 # ================================================================
 # 분석 프로세스 시각화 — 5단계 가로 스텝
