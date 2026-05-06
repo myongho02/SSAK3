@@ -141,6 +141,17 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ── user_label 컬럼: 분석 요청자 프로필 라벨 (E1, 경량 사용자화) ──
+    # 향후 OAuth/JWT 기반 정식 user_id로 확장 가능. 지금은 자유 입력 텍스트.
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN user_label TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN user_label TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     # ── jobs 테이블: 분석 요청의 생명주기를 추적 ──
     # API가 job을 생성(pending)하고, Worker가 상태를 갱신(processing→done/failed)한다.
     # 대시보드는 jobs 기준으로 진행률을 표시한다.
@@ -1032,8 +1043,8 @@ def save_to_db(result):
                 (url, title, body, content_score, provocative_score, source_score,
                  total_score, grade, status, analyzed_at,
                  matched_keywords, detected_provocative, ai_sentiment, source_name,
-                 worker_id, processing_time, cache_stats)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 worker_id, processing_time, cache_stats, user_label)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 result['url'], result['title'], result['body'][:500],
                 result['content'], result['provocative'], result['source'],
@@ -1045,7 +1056,8 @@ def save_to_db(result):
                 result.get('source_name', ''),
                 WORKER_ID,                              # 현재 Worker의 ID
                 result.get('processing_time', None),    # 처리 소요 시간 (초)
-                result.get('cache_stats', None)         # 캐시 적중률 스냅샷 (JSON)
+                result.get('cache_stats', None),        # 캐시 적중률 스냅샷 (JSON)
+                result.get('user_label', '')            # 분석 요청자 프로필 라벨
             ))
             conn.commit()
             return True  # 저장 성공
@@ -1190,6 +1202,7 @@ def process_message(ch, method, properties, body):
     data = json.loads(body)
     url = data['url']
     job_id = data.get('job_id')  # 구버전 메시지는 job_id가 없을 수 있음
+    user_label = data.get('user_label', '') or ''  # 프로필 라벨 (E1, 경량 사용자화)
     retry_count = data.get('retry_count', 0)  # 현재까지의 재시도 횟수
 
     # ── 처리 시간 측정 시작 ──
@@ -1258,6 +1271,7 @@ def process_message(ch, method, properties, body):
         'source_name': f"{source_name}|{source_class}",  # "연합뉴스|주요 언론사" 형태
         'processing_time': round(_elapsed, 2),  # 처리 소요 시간 (초, 소수점 2자리)
         'cache_stats': cache_snapshot,  # 처리 완료 시점의 LRU 캐시 적중률 스냅샷
+        'user_label': user_label,  # 분석 요청자 프로필 라벨
     }
 
     if save_to_db(result):

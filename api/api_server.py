@@ -81,12 +81,27 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ── user_label 컬럼: 분석 요청자 프로필 라벨 (E1, 경량 사용자화) ──
+    # 향후 OAuth/JWT 기반 정식 user_id로 확장 가능. 지금은 자유 입력 텍스트.
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN user_label TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN user_label TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
 
-def create_job(url):
+def create_job(url, user_label=""):
     """jobs 테이블에 분석 요청을 pending 상태로 생성한다.
+
+    Args:
+        url: 분석 대상 URL
+        user_label: 분석 요청자 프로필 라벨 (E1, 경량 사용자화). 없으면 빈 문자열.
 
     Returns: job_id (정수) 또는 실패 시 None
     """
@@ -94,8 +109,8 @@ def create_job(url):
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO jobs (url, status, queued_at) VALUES (?, 'pending', ?)",
-            (url, time.strftime("%Y-%m-%d %H:%M:%S"))
+            "INSERT INTO jobs (url, status, queued_at, user_label) VALUES (?, 'pending', ?, ?)",
+            (url, time.strftime("%Y-%m-%d %H:%M:%S"), user_label or "")
         )
         conn.commit()
         job_id = cursor.lastrowid
@@ -106,9 +121,9 @@ def create_job(url):
         return None
 
 
-def send_to_queue(job_id, url):
+def send_to_queue(job_id, url, user_label=""):
     """job_id와 URL을 RabbitMQ 큐에 넣기.
-    큐 메시지에 job_id를 포함하여 Worker가 정확한 job을 추적할 수 있게 한다.
+    큐 메시지에 job_id, user_label을 포함하여 Worker가 결과 저장 시 함께 기록한다.
     """
     connection = pika.BlockingConnection(
         pika.ConnectionParameters(host='rabbitmq')
@@ -119,6 +134,7 @@ def send_to_queue(job_id, url):
     message = json.dumps({
         "job_id": job_id,
         "url": url,
+        "user_label": user_label or "",
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     })
 
@@ -194,6 +210,7 @@ def analyze():
         return jsonify({"error": "URL을 입력해주세요"}), 400
 
     url = data['url']
+    user_label = data.get('user_label', '') or ''
 
     # 1) 이미 분석 완료된 결과가 있으면 즉시 반환
     existing = check_existing_result(url)
@@ -211,13 +228,13 @@ def analyze():
             "url": url
         })
 
-    # 3) 새 job 생성 → 큐에 전달
-    job_id = create_job(url)
+    # 3) 새 job 생성 → 큐에 전달 (user_label 포함)
+    job_id = create_job(url, user_label=user_label)
     if job_id is None:
         return jsonify({"error": "분석 요청 생성 실패"}), 500
 
     try:
-        send_to_queue(job_id, url)
+        send_to_queue(job_id, url, user_label=user_label)
     except Exception as e:
         print(f"[API] RabbitMQ 전송 실패: {e}")
         # 큐 전송 실패 시 job을 failed로 마킹
@@ -254,6 +271,7 @@ def analyze_bulk():
         return jsonify({"error": "urls 리스트를 입력해주세요"}), 400
 
     urls = data['urls']
+    user_label = data.get('user_label', '') or ''
     if not isinstance(urls, list) or len(urls) == 0:
         return jsonify({"error": "urls는 비어있지 않은 배열이어야 합니다"}), 400
 
@@ -297,13 +315,14 @@ def analyze_bulk():
             skipped_count += 1
             continue
 
-        job_id = create_job(url)
+        job_id = create_job(url, user_label=user_label)
         if job_id is None:
             continue
 
         message = json.dumps({
             "job_id": job_id,
             "url": url,
+            "user_label": user_label,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         })
         channel.basic_publish(

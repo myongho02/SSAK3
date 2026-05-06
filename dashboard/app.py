@@ -175,6 +175,161 @@ keyword_search = st.sidebar.text_input(
 st.sidebar.markdown("---")
 
 # ================================================================
+# 사용자화 패널 — 분야 프리셋(E4) + 가중치(E2) + 등급 임계치(E6)
+# ================================================================
+# 분석 결과의 raw 점수(content/provocative/source)는 DB에 저장된 그대로 두고,
+# 종합 점수와 등급만 사용자 설정에 따라 즉시 재계산.
+# 학계 기본값(45/35/20, 80/60/40)을 유지하면서 사용자 맞춤 모드 제공.
+st.sidebar.markdown("**🎚️ 분석 사용자화**")
+
+# ── 분야별 프리셋 (E4) — 도메인 적응 ──
+# 분야 특성을 반영하여 가중치와 임계치를 자동 전환:
+# - 정치: 출처 신뢰도 비중↑, 임계치 엄격 (가짜뉴스 영향력 큼)
+# - 경제: 본문 일치도 비중↑ (수치/사실 정확성 중요)
+# - 연예: 자극성 비중↑, 임계치 완화 (선정적 표현 빈도 높음 감안)
+# - 일반: 학계 기본값 (45/35/20, 80/60/40)
+PRESETS = {
+    "일반 (기본값)": {"w": (45, 35, 20), "th": (80, 60, 40)},
+    "정치 — 출처 엄격": {"w": (40, 30, 30), "th": (85, 65, 45)},
+    "경제 — 본문 정확성 중시": {"w": (50, 30, 20), "th": (80, 60, 40)},
+    "연예 — 자극성 비중↑": {"w": (35, 45, 20), "th": (75, 55, 35)},
+}
+preset_choice = st.sidebar.selectbox(
+    "분야 프리셋",
+    list(PRESETS.keys()),
+    index=0,
+    key="preset_choice",
+    help="분야별로 가중치와 등급 임계치가 자동 조정됩니다",
+)
+
+# 프리셋이 변경되면 세션 슬라이더 값을 일괄 갱신 (선택 즉시 반영)
+_p = PRESETS[preset_choice]
+if st.session_state.get("_active_preset") != preset_choice:
+    st.session_state["_active_preset"] = preset_choice
+    st.session_state["w_content"] = _p["w"][0]
+    st.session_state["w_prov"] = _p["w"][1]
+    st.session_state["w_source"] = _p["w"][2]
+    st.session_state["th_reliable"] = _p["th"][0]
+    st.session_state["th_caution"] = _p["th"][1]
+    st.session_state["th_suspect"] = _p["th"][2]
+
+with st.sidebar.expander("가중치 / 임계치 세부조정", expanded=False):
+    st.markdown("**가중치 (합계 100%)**")
+    w_content = st.slider("본문 일치도", 0, 100, _p["w"][0], step=5, key="w_content")
+    w_prov = st.slider("자극성 분석", 0, 100, _p["w"][1], step=5, key="w_prov")
+    w_source = st.slider("출처 신뢰도", 0, 100, _p["w"][2], step=5, key="w_source")
+
+    w_sum = w_content + w_prov + w_source
+    if w_sum != 100:
+        st.warning(f"⚠️ 가중치 합계 {w_sum}% (100%로 정규화하여 적용)")
+
+    st.markdown("**등급 임계치**")
+    th_reliable = st.slider("신뢰 가능 ≥", 60, 95, _p["th"][0], step=5, key="th_reliable")
+    th_caution = st.slider("주의 필요 ≥", 40, 75, _p["th"][1], step=5, key="th_caution")
+    th_suspect = st.slider("의심 기사 ≥", 20, 55, _p["th"][2], step=5, key="th_suspect")
+
+    if not (th_reliable > th_caution > th_suspect):
+        st.error("⚠️ 임계치는 신뢰 > 주의 > 의심 순으로 내려가야 합니다")
+
+    st.caption("프리셋 변경 시 자동 적용됩니다. 기본값 복원은 분야 프리셋을 '일반(기본값)'으로 선택하세요.")
+
+# 정규화된 사용자 가중치 (raw 점수 → 종합 점수 재계산용)
+_w_total = max(1, w_content + w_prov + w_source)
+USER_W_CONTENT = w_content / _w_total
+USER_W_PROV = w_prov / _w_total
+USER_W_SOURCE = w_source / _w_total
+USER_TH_RELIABLE = th_reliable
+USER_TH_CAUTION = th_caution
+USER_TH_SUSPECT = th_suspect
+
+
+def recompute_score(content, prov, source):
+    """사용자 가중치로 종합 점수 재계산"""
+    return round(
+        (content or 0) * USER_W_CONTENT
+        + (prov or 0) * USER_W_PROV
+        + (source or 0) * USER_W_SOURCE,
+        1,
+    )
+
+
+def recompute_grade(score):
+    """사용자 임계치로 등급 재판정"""
+    if score >= USER_TH_RELIABLE:
+        return "신뢰 가능"
+    elif score >= USER_TH_CAUTION:
+        return "주의 필요"
+    elif score >= USER_TH_SUSPECT:
+        return "의심 기사"
+    else:
+        return "신뢰 낮음"
+
+
+# 사용자화 모드 표시 (발표 멘트용 — 학계 기본값 + 분야 적응 + 사용자 미세조정)
+_is_default = (
+    preset_choice == "일반 (기본값)"
+    and w_content == 45 and w_prov == 35 and w_source == 20
+    and th_reliable == 80 and th_caution == 60 and th_suspect == 40
+)
+if not _is_default:
+    st.sidebar.success(
+        f"🎚️ 사용자화 모드 [{preset_choice.split(' —')[0]}] — "
+        f"가중치 {w_content}/{w_prov}/{w_source} · "
+        f"임계치 {th_reliable}/{th_caution}/{th_suspect}"
+    )
+else:
+    st.sidebar.caption("학계 기본값(45/35/20, 80/60/40)으로 분석 표시 중")
+
+# ── 사용자 프로필 (E1, 경량) — 분석 이력 라벨링 ──
+# 실제 인증 시스템 대신, 발표용 가벼운 "프로필 이름" 라벨링.
+# 분석 요청 시 user_label로 함께 전송되어 DB에 저장 → 본인 분석만 필터 가능.
+# 향후 OAuth/JWT 기반 정식 로그인으로 확장 가능한 구조.
+with st.sidebar.expander("👤 프로필 (분석 이력 라벨)", expanded=False):
+    user_label = st.text_input(
+        "프로필 이름",
+        value=st.session_state.get("user_label", ""),
+        placeholder="예: 명호 / 익명 비워두기",
+        key="user_label",
+        help="입력 시 분석 결과에 라벨이 함께 저장되어 본인 분석만 필터할 수 있습니다",
+    )
+    only_mine = st.checkbox(
+        "내 분석만 보기",
+        value=False,
+        disabled=not user_label,
+        help="프로필 이름이 입력되어야 활성화됩니다",
+    )
+
+USER_LABEL = (user_label or "").strip()
+ONLY_MINE = only_mine and bool(USER_LABEL)
+
+# ── 사용자 자극성 사전 (E3) — 추가/면제 단어 ──
+# 시스템 기본 사전(과장/혐오/선정/공포 4카테고리) 외에 사용자가 도메인 특화
+# 단어를 추가하거나 일반 사전 중 일부를 면제 처리할 수 있음.
+# 결과 카드의 자극성 근거 섹션에서 시각적으로 강조 표시.
+with st.sidebar.expander("📝 사용자 자극성 사전", expanded=False):
+    user_extra = st.text_area(
+        "추가 단어 (콤마로 구분)",
+        value=st.session_state.get("user_extra", ""),
+        placeholder="예: 폭락, 패닉셀, 떡상",
+        key="user_extra",
+        height=68,
+        help="본문/제목에 등장하면 자극성 근거에 추가로 표시됩니다",
+    )
+    user_exempt = st.text_area(
+        "면제 단어 (콤마로 구분)",
+        value=st.session_state.get("user_exempt", ""),
+        placeholder="예: 충격, 경고",
+        key="user_exempt",
+        height=68,
+        help="시스템 사전에서 검출되더라도 면제 처리하여 강조에서 제외됩니다",
+    )
+
+USER_EXTRA_WORDS = [w.strip() for w in (user_extra or "").split(",") if w.strip()]
+USER_EXEMPT_WORDS = [w.strip() for w in (user_exempt or "").split(",") if w.strip()]
+
+st.sidebar.markdown("---")
+
+# ================================================================
 # DB에서 분석 결과 로드
 # ================================================================
 def load_data():
@@ -471,7 +626,7 @@ with st.container():
                 try:
                     resp = requests.post(
                         f"{API_URL}/analyze",
-                        json={"url": url_input},
+                        json={"url": url_input, "user_label": USER_LABEL},
                         timeout=5
                     )
                     if resp.status_code == 200:
@@ -513,7 +668,7 @@ with st.container():
                 try:
                     resp = requests.post(
                         f"{API_URL}/analyze/bulk",
-                        json={"urls": valid_urls},
+                        json={"urls": valid_urls, "user_label": USER_LABEL},
                         timeout=30
                     )
                     if resp.status_code == 200:
@@ -599,7 +754,20 @@ if df.empty:
 # 사이드바 필터 적용 — 실패 기사 분리 후 3종 필터 결합
 # ================================================================
 failed_df = df[df['status'] == 'failed']
-done_df_all = df[df['status'] == 'done']
+done_df_all = df[df['status'] == 'done'].copy()
+
+# ── 프로필 필터 (E1) — "내 분석만 보기" 토글이 켜져 있으면 user_label로 필터 ──
+if ONLY_MINE and 'user_label' in done_df_all.columns:
+    done_df_all = done_df_all[done_df_all['user_label'].fillna('') == USER_LABEL]
+
+# ── 사용자 가중치/임계치로 종합 점수·등급 재계산 (사이드바 슬라이더 반영) ──
+# 필터/요약 카드/결과 카드가 모두 재계산된 값을 사용하도록 여기서 한 번에 적용.
+if not done_df_all.empty:
+    done_df_all['total_score'] = done_df_all.apply(
+        lambda r: recompute_score(r.get('content_score'), r.get('provocative_score'), r.get('source_score')),
+        axis=1,
+    )
+    done_df_all['grade'] = done_df_all['total_score'].apply(recompute_grade)
 
 # 등급 필터
 if grade_filter != "전체":
@@ -627,11 +795,12 @@ if keyword_search:
 # 상단 요약 카드 4개 — 아이콘 + 숫자 + 라벨
 # done 상태인 기사만 집계
 # ================================================================
+# done_df_all은 이미 사용자 재계산이 반영된 상태 (위 done_df_all 정의 직후 처리)
 done_df = done_df_all
 
 avg_score = done_df['total_score'].mean() if not done_df.empty else 0
-reliable_count = len(done_df[done_df['total_score'] >= 80])
-low_count = len(done_df[done_df['total_score'] < 40])
+reliable_count = len(done_df[done_df['total_score'] >= USER_TH_RELIABLE])
+low_count = len(done_df[done_df['total_score'] < USER_TH_SUSPECT])
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -952,12 +1121,34 @@ else:
 </div>"""
 
         # ── 섹션 2: 자극성 분석 근거 HTML 생성 ──
+        # 사용자 사전(E3) 적용:
+        # - USER_EXEMPT_WORDS에 든 단어는 시스템 검출이 있어도 "면제" 회색 표시
+        # - USER_EXTRA_WORDS는 본문/제목에 등장 여부를 직접 검사하여 별도 표시
         detected = prov_data.get('detected', {})
         prov_ratio = prov_data.get('ratio', 0)
         prov_tags = ""
         for cat, words in detected.items():
             for w in words:
-                prov_tags += f'<span class="cat-label">{cat}</span><span class="prov-tag">{w}</span> '
+                if w in USER_EXEMPT_WORDS:
+                    # 사용자 면제 — 회색 + 취소선
+                    prov_tags += f'<span class="cat-label">{cat}</span><span class="prov-tag" style="background:#E2E8F0;color:#64748B;text-decoration:line-through;">{w} (면제)</span> '
+                else:
+                    prov_tags += f'<span class="cat-label">{cat}</span><span class="prov-tag">{w}</span> '
+
+        # 사용자 추가 단어 — 본문/제목에 매칭되는지 직접 확인
+        user_hit_tags = ""
+        if USER_EXTRA_WORDS:
+            body_text = (row.get('title') or '') + ' ' + (row.get('body') or '')
+            for w in USER_EXTRA_WORDS:
+                if w and w in body_text:
+                    user_hit_tags += f'<span class="cat-label" style="background:#FEE2E2;color:#991B1B;">사용자</span><span class="prov-tag" style="background:#FEE2E2;color:#991B1B;border:1px solid #F87171;">{w}</span> '
+
+        user_dict_row = ""
+        if USER_EXTRA_WORDS or USER_EXEMPT_WORDS:
+            user_dict_row = f"""<div class="evidence-row" style="font-size:11px;color:#64748B;margin-top:4px;">
+사용자 사전: 추가 <b>{len(USER_EXTRA_WORDS)}개</b> · 면제 <b>{len(USER_EXEMPT_WORDS)}개</b>
+{f'<div style="margin-top:4px;">사용자 추가 단어 검출: {user_hit_tags}</div>' if user_hit_tags else ''}
+</div>"""
 
         ai_neutral = ai_data.get('neutral', 0)
         ai_positive = ai_data.get('positive', 0)
@@ -966,6 +1157,7 @@ else:
         evidence2 = f"""<div class="evidence-section">
 <div class="evidence-title">⚡ 자극성 분석 근거</div>
 <div class="evidence-row">감지된 자극적 표현: {prov_tags if prov_tags else '<span style="color:#94A3B8;">없음</span>'}</div>
+{user_dict_row}
 <div class="evidence-row">자극적 표현 비율: <b>{prov_ratio}%</b> (본문 대비)</div>
 <div class="evidence-row">논조 분석 보조지표 (KR-FinBert): 중립 <b>{ai_neutral}%</b> / 부정 <b>{ai_negative}%</b> / 긍정 <b>{ai_positive}%</b></div>
 <div class="evidence-row">최종 자극성 점수: <b>{provocative_s:.1f}점</b></div>
@@ -1047,7 +1239,7 @@ if not failed_df.empty:
                 try:
                     resp = requests.post(
                         f"{API_URL}/analyze",
-                        json={"url": row['url']},
+                        json={"url": row['url'], "user_label": USER_LABEL},
                         timeout=5
                     )
                     if resp.status_code == 200:
