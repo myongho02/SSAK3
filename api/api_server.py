@@ -4,9 +4,15 @@ import json
 import sqlite3
 import time
 import os
+import secrets
+import bcrypt
 
 app = Flask(__name__)
 DB_PATH = "/app/data/results.db"
+
+# ========== Phase G — 사용자 격리 설정 ==========
+# 세션 토큰 만료 시간 (초). 7일.
+SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 # ========== DB 초기화 ==========
@@ -92,16 +98,235 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ========== Phase G — 사용자 격리 (Multi-tenant) ==========
+    # users: 회원 계정 (username unique, bcrypt 패스워드 해싱)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    ''')
+
+    # sessions: 로그인 토큰 (만료 시간 포함)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    ''')
+
+    # ── user_id 외래키: 본인 분석만 격리 조회 가능하게 ──
+    # NULL 허용 (비회원 모드 보존 — 기존 분석 결과와 호환)
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
 
-def create_job(url, user_label=""):
+# ========== Phase G — 인증 헬퍼 ==========
+
+def hash_password(password):
+    """bcrypt로 패스워드 해싱"""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+
+def verify_password(password, password_hash):
+    """bcrypt 검증"""
+    try:
+        return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+    except Exception:
+        return False
+
+
+def create_session(user_id):
+    """새 세션 토큰을 발급하고 DB에 저장한다."""
+    token = secrets.token_hex(32)
+    now = int(time.time())
+    expires = now + SESSION_TTL_SECONDS
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+            (token, user_id, time.strftime("%Y-%m-%d %H:%M:%S"), expires)
+        )
+        conn.commit()
+        conn.close()
+        return token
+    except Exception as e:
+        print(f"[API] 세션 생성 실패: {e}")
+        return None
+
+
+def get_user_from_token(token):
+    """Authorization 헤더의 토큰으로 user_id를 조회한다.
+    만료된 세션은 자동 정리(삭제)하고 None 반환.
+    """
+    if not token:
+        return None
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        # 만료된 세션 청소
+        now = int(time.time())
+        cursor.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+        conn.commit()
+        # 토큰으로 user_id 조회
+        cursor.execute("SELECT user_id FROM sessions WHERE token = ?", (token,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def auth_user(req):
+    """요청 헤더에서 토큰을 꺼내 user_id를 반환한다.
+    Authorization: Bearer <token> 형식 또는 X-Auth-Token 헤더 지원.
+    Returns: user_id (int) 또는 None (비회원/익명).
+    """
+    token = req.headers.get('Authorization', '').replace('Bearer ', '').strip()
+    if not token:
+        token = req.headers.get('X-Auth-Token', '').strip()
+    return get_user_from_token(token) if token else None
+
+
+# ========== Phase G — 인증 엔드포인트 ==========
+
+@app.route('/auth/register', methods=['POST'])
+def auth_register():
+    """회원가입. {username, password} JSON 입력.
+    username 중복 체크 후 bcrypt로 해싱하여 저장.
+    """
+    data = request.get_json() or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+
+    if not username or not password:
+        return jsonify({"error": "username과 password가 필요합니다"}), 400
+    if len(username) < 3 or len(username) > 30:
+        return jsonify({"error": "username은 3~30자여야 합니다"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "password는 최소 6자 이상이어야 합니다"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({"error": "이미 사용 중인 username입니다"}), 409
+        cursor.execute(
+            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+            (username, hash_password(password), time.strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+        conn.close()
+        token = create_session(user_id)
+        return jsonify({
+            "message": "회원가입 완료",
+            "user_id": user_id,
+            "username": username,
+            "token": token,
+        })
+    except Exception as e:
+        print(f"[API] 회원가입 실패: {e}")
+        return jsonify({"error": f"회원가입 실패: {str(e)}"}), 500
+
+
+@app.route('/auth/login', methods=['POST'])
+def auth_login():
+    """로그인. {username, password} JSON 입력.
+    인증 성공 시 새 세션 토큰을 발급한다.
+    """
+    data = request.get_json() or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+
+    if not username or not password:
+        return jsonify({"error": "username과 password가 필요합니다"}), 400
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, password_hash FROM users WHERE username = ?", (username,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row or not verify_password(password, row[1]):
+            return jsonify({"error": "username 또는 password가 올바르지 않습니다"}), 401
+        user_id = row[0]
+        token = create_session(user_id)
+        return jsonify({
+            "message": "로그인 성공",
+            "user_id": user_id,
+            "username": username,
+            "token": token,
+        })
+    except Exception as e:
+        print(f"[API] 로그인 실패: {e}")
+        return jsonify({"error": f"로그인 실패: {str(e)}"}), 500
+
+
+@app.route('/auth/logout', methods=['POST'])
+def auth_logout():
+    """로그아웃 — 세션 토큰 무효화."""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '').strip()
+    if not token:
+        return jsonify({"message": "이미 비회원 상태"}), 200
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    return jsonify({"message": "로그아웃 완료"})
+
+
+@app.route('/auth/me', methods=['GET'])
+def auth_me():
+    """현재 토큰의 사용자 정보 조회."""
+    user_id = auth_user(request)
+    if not user_id:
+        return jsonify({"authenticated": False})
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, created_at FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return jsonify({
+                "authenticated": True,
+                "user_id": user_id,
+                "username": row[0],
+                "created_at": row[1],
+            })
+    except Exception:
+        pass
+    return jsonify({"authenticated": False})
+
+
+def create_job(url, user_label="", user_id=None):
     """jobs 테이블에 분석 요청을 pending 상태로 생성한다.
 
     Args:
         url: 분석 대상 URL
         user_label: 분석 요청자 프로필 라벨 (E1, 경량 사용자화). 없으면 빈 문자열.
+        user_id: 인증된 회원의 user_id (Phase G). 비회원은 None.
 
     Returns: job_id (정수) 또는 실패 시 None
     """
@@ -109,8 +334,8 @@ def create_job(url, user_label=""):
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO jobs (url, status, queued_at, user_label) VALUES (?, 'pending', ?, ?)",
-            (url, time.strftime("%Y-%m-%d %H:%M:%S"), user_label or "")
+            "INSERT INTO jobs (url, status, queued_at, user_label, user_id) VALUES (?, 'pending', ?, ?, ?)",
+            (url, time.strftime("%Y-%m-%d %H:%M:%S"), user_label or "", user_id)
         )
         conn.commit()
         job_id = cursor.lastrowid
@@ -121,9 +346,9 @@ def create_job(url, user_label=""):
         return None
 
 
-def send_to_queue(job_id, url, user_label=""):
+def send_to_queue(job_id, url, user_label="", user_id=None):
     """job_id와 URL을 RabbitMQ 큐에 넣기.
-    큐 메시지에 job_id, user_label을 포함하여 Worker가 결과 저장 시 함께 기록한다.
+    큐 메시지에 job_id, user_label, user_id를 포함하여 Worker가 결과 저장 시 함께 기록한다.
     """
     connection = pika.BlockingConnection(
         pika.ConnectionParameters(host='rabbitmq')
@@ -135,6 +360,7 @@ def send_to_queue(job_id, url, user_label=""):
         "job_id": job_id,
         "url": url,
         "user_label": user_label or "",
+        "user_id": user_id,  # 인증된 회원의 user_id (None이면 비회원)
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     })
 
@@ -147,19 +373,30 @@ def send_to_queue(job_id, url, user_label=""):
     connection.close()
 
 
-def check_existing_result(url):
+def check_existing_result(url, user_id=None):
     """이미 분석 완료(done)된 결과가 있는지 확인한다.
-    Returns: dict(결과) 또는 None
+    [Phase G] user_id별 격리: 본인이 분석한 결과만 "이미 분석됨"으로 인정.
+    다른 사용자가 같은 URL을 분석했어도 본인 입장에서는 새로 분석해야 함.
     """
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM analysis_results WHERE url = ? AND status = 'done' "
-            "ORDER BY analyzed_at DESC LIMIT 1",
-            (url,)
-        )
+        if user_id is None:
+            # 비회원: user_id IS NULL인 결과만 본인 것으로 간주
+            cursor.execute(
+                "SELECT * FROM analysis_results WHERE url = ? AND status = 'done' "
+                "AND user_id IS NULL "
+                "ORDER BY analyzed_at DESC LIMIT 1",
+                (url,)
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM analysis_results WHERE url = ? AND status = 'done' "
+                "AND user_id = ? "
+                "ORDER BY analyzed_at DESC LIMIT 1",
+                (url, user_id)
+            )
         existing = cursor.fetchone()
         conn.close()
         return dict(existing) if existing else None
@@ -167,17 +404,23 @@ def check_existing_result(url):
         return None
 
 
-def check_pending_or_processing(url):
-    """해당 URL이 현재 pending 또는 processing 상태인 job이 있는지 확인한다.
-    Returns: True면 이미 큐에 있거나 처리 중
-    """
+def check_pending_or_processing(url, user_id=None):
+    """해당 URL이 현재 pending/processing 상태인 본인 job이 있는지 확인한다."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM jobs WHERE url = ? AND status IN ('pending', 'processing')",
-            (url,)
-        )
+        if user_id is None:
+            cursor.execute(
+                "SELECT COUNT(*) FROM jobs WHERE url = ? AND status IN ('pending', 'processing') "
+                "AND user_id IS NULL",
+                (url,)
+            )
+        else:
+            cursor.execute(
+                "SELECT COUNT(*) FROM jobs WHERE url = ? AND status IN ('pending', 'processing') "
+                "AND user_id = ?",
+                (url, user_id)
+            )
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
@@ -211,9 +454,11 @@ def analyze():
 
     url = data['url']
     user_label = data.get('user_label', '') or ''
+    # Phase G: 인증된 사용자 식별
+    user_id = auth_user(request)
 
-    # 1) 이미 분석 완료된 결과가 있으면 즉시 반환
-    existing = check_existing_result(url)
+    # 1) 이미 분석 완료된 결과가 있으면 즉시 반환 (본인 결과만)
+    existing = check_existing_result(url, user_id=user_id)
     if existing:
         return jsonify({
             "message": "이미 분석된 기사입니다.",
@@ -221,20 +466,20 @@ def analyze():
             "result": existing
         })
 
-    # 2) 현재 pending/processing 중이면 중복 요청 방지
-    if check_pending_or_processing(url):
+    # 2) 현재 pending/processing 중이면 중복 요청 방지 (본인 job만)
+    if check_pending_or_processing(url, user_id=user_id):
         return jsonify({
             "message": "이미 분석이 진행 중입니다. 잠시 후 결과를 확인해주세요.",
             "url": url
         })
 
-    # 3) 새 job 생성 → 큐에 전달 (user_label 포함)
-    job_id = create_job(url, user_label=user_label)
+    # 3) 새 job 생성 → 큐에 전달 (user_id + user_label 포함)
+    job_id = create_job(url, user_label=user_label, user_id=user_id)
     if job_id is None:
         return jsonify({"error": "분석 요청 생성 실패"}), 500
 
     try:
-        send_to_queue(job_id, url, user_label=user_label)
+        send_to_queue(job_id, url, user_label=user_label, user_id=user_id)
     except Exception as e:
         print(f"[API] RabbitMQ 전송 실패: {e}")
         # 큐 전송 실패 시 job을 failed로 마킹
@@ -272,23 +517,29 @@ def analyze_bulk():
 
     urls = data['urls']
     user_label = data.get('user_label', '') or ''
+    user_id = auth_user(request)  # Phase G: 인증된 회원 식별
     if not isinstance(urls, list) or len(urls) == 0:
         return jsonify({"error": "urls는 비어있지 않은 배열이어야 합니다"}), 400
 
     queued_count = 0
     skipped_count = 0
 
-    # done 상태 URL 집합
+    # done/active URL 집합 — Phase G: user_id별로 격리해 본인 데이터만 중복 체크
     done_urls = set()
-    # pending/processing 상태 URL 집합
     active_urls = set()
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
-        cursor.execute("SELECT url FROM analysis_results WHERE status = 'done'")
-        done_urls = {row[0] for row in cursor.fetchall()}
-        cursor.execute("SELECT url FROM jobs WHERE status IN ('pending', 'processing')")
-        active_urls = {row[0] for row in cursor.fetchall()}
+        if user_id is None:
+            cursor.execute("SELECT url FROM analysis_results WHERE status = 'done' AND user_id IS NULL")
+            done_urls = {row[0] for row in cursor.fetchall()}
+            cursor.execute("SELECT url FROM jobs WHERE status IN ('pending', 'processing') AND user_id IS NULL")
+            active_urls = {row[0] for row in cursor.fetchall()}
+        else:
+            cursor.execute("SELECT url FROM analysis_results WHERE status = 'done' AND user_id = ?", (user_id,))
+            done_urls = {row[0] for row in cursor.fetchall()}
+            cursor.execute("SELECT url FROM jobs WHERE status IN ('pending', 'processing') AND user_id = ?", (user_id,))
+            active_urls = {row[0] for row in cursor.fetchall()}
         conn.close()
     except Exception:
         pass
@@ -315,7 +566,7 @@ def analyze_bulk():
             skipped_count += 1
             continue
 
-        job_id = create_job(url, user_label=user_label)
+        job_id = create_job(url, user_label=user_label, user_id=user_id)
         if job_id is None:
             continue
 
@@ -323,6 +574,7 @@ def analyze_bulk():
             "job_id": job_id,
             "url": url,
             "user_label": user_label,
+            "user_id": user_id,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         })
         channel.basic_publish(
@@ -346,12 +598,16 @@ def analyze_bulk():
 
 @app.route('/jobs', methods=['GET'])
 def get_jobs():
-    """jobs 테이블에서 분석 작업 현황을 조회한다."""
+    """jobs 테이블에서 본인 분석 작업 현황을 조회한다 (Phase G — user_id 격리)."""
+    user_id = auth_user(request)
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM jobs ORDER BY id DESC")
+        if user_id is None:
+            cursor.execute("SELECT * FROM jobs WHERE user_id IS NULL ORDER BY id DESC")
+        else:
+            cursor.execute("SELECT * FROM jobs WHERE user_id = ? ORDER BY id DESC", (user_id,))
         rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify(rows)
@@ -362,13 +618,20 @@ def get_jobs():
 
 @app.route('/jobs/summary', methods=['GET'])
 def get_jobs_summary():
-    """jobs 상태별 건수 요약을 반환한다."""
+    """본인의 jobs 상태별 건수 요약 (Phase G)."""
+    user_id = auth_user(request)
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT status, COUNT(*) as cnt FROM jobs GROUP BY status"
-        )
+        if user_id is None:
+            cursor.execute(
+                "SELECT status, COUNT(*) as cnt FROM jobs WHERE user_id IS NULL GROUP BY status"
+            )
+        else:
+            cursor.execute(
+                "SELECT status, COUNT(*) as cnt FROM jobs WHERE user_id = ? GROUP BY status",
+                (user_id,)
+            )
         summary = {row[0]: row[1] for row in cursor.fetchall()}
         conn.close()
         return jsonify(summary)
@@ -379,12 +642,21 @@ def get_jobs_summary():
 
 @app.route('/results', methods=['GET'])
 def get_results():
-    """분석 결과 전체 조회"""
+    """본인 분석 결과만 조회 (Phase G — user_id 격리)."""
+    user_id = auth_user(request)
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM analysis_results ORDER BY analyzed_at DESC")
+        if user_id is None:
+            cursor.execute(
+                "SELECT * FROM analysis_results WHERE user_id IS NULL ORDER BY analyzed_at DESC"
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM analysis_results WHERE user_id = ? ORDER BY analyzed_at DESC",
+                (user_id,)
+            )
         rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify(rows)
@@ -395,7 +667,8 @@ def get_results():
 
 @app.route('/results/<int:result_id>', methods=['GET'])
 def get_result(result_id):
-    """특정 분석 결과 조회"""
+    """특정 분석 결과 조회 — 본인 것만 허용 (Phase G)."""
+    user_id = auth_user(request)
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -403,9 +676,13 @@ def get_result(result_id):
         cursor.execute("SELECT * FROM analysis_results WHERE id = ?", (result_id,))
         row = cursor.fetchone()
         conn.close()
-        if row:
-            return jsonify(dict(row))
-        return jsonify({"error": "결과를 찾을 수 없습니다"}), 404
+        if not row:
+            return jsonify({"error": "결과를 찾을 수 없습니다"}), 404
+        # 본인 결과만 반환
+        result_user_id = dict(row).get('user_id')
+        if result_user_id != user_id:
+            return jsonify({"error": "다른 사용자의 분석 결과는 조회할 수 없습니다"}), 403
+        return jsonify(dict(row))
     except Exception as e:
         print(f"[API] 결과 조회 실패 (id={result_id}): {e}")
         return jsonify({"error": f"DB 조회 실패: {str(e)}"}), 500

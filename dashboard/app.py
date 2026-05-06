@@ -13,6 +13,118 @@ API_URL = "http://api:5000"
 
 st.set_page_config(page_title="뉴스 신뢰도 분석", page_icon="📰", layout="wide")
 
+
+# ========== Phase G — 인증 헬퍼 ==========
+
+def auth_headers():
+    """현재 세션 토큰을 Authorization 헤더로 변환."""
+    tok = st.session_state.get("auth_token")
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
+
+
+def auth_user_info():
+    """현재 로그인 사용자 정보. 없으면 None."""
+    return st.session_state.get("auth_user")
+
+
+def auth_login(username, password):
+    """로그인 API 호출 → 토큰 저장. 실패 시 (False, error_msg)."""
+    try:
+        r = requests.post(f"{API_URL}/auth/login",
+                          json={"username": username, "password": password},
+                          timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            st.session_state["auth_token"] = data["token"]
+            st.session_state["auth_user"] = {
+                "user_id": data["user_id"], "username": data["username"]
+            }
+            return True, None
+        return False, r.json().get("error", "로그인 실패")
+    except Exception as e:
+        return False, f"API 연결 실패: {e}"
+
+
+def auth_register(username, password):
+    """회원가입 API 호출 → 토큰 저장."""
+    try:
+        r = requests.post(f"{API_URL}/auth/register",
+                          json={"username": username, "password": password},
+                          timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            st.session_state["auth_token"] = data["token"]
+            st.session_state["auth_user"] = {
+                "user_id": data["user_id"], "username": data["username"]
+            }
+            return True, None
+        return False, r.json().get("error", "회원가입 실패")
+    except Exception as e:
+        return False, f"API 연결 실패: {e}"
+
+
+def auth_logout():
+    """로그아웃."""
+    try:
+        requests.post(f"{API_URL}/auth/logout",
+                      headers=auth_headers(), timeout=5)
+    except Exception:
+        pass
+    st.session_state.pop("auth_token", None)
+    st.session_state.pop("auth_user", None)
+
+
+# ── 로그인 게이트 페이지 (비로그인 + 비비회원모드 시) ──
+def render_login_gate():
+    """로그인/회원가입/비회원 모드 진입 페이지."""
+    st.markdown("""<div style="background: linear-gradient(135deg, #0F1B2D 0%, #1E3A5F 100%); padding: 40px 48px; border-radius: 20px; margin-bottom: 32px;">
+<h1 style="color: #FFFFFF; margin: 0; font-size: 36px; font-weight: 700;">📰 SSAK3 뉴스 신뢰도 분석</h1>
+<p style="color: #94A3B8; margin: 8px 0 0 0; font-size: 16px; font-weight: 300;">사용자별 분석 이력 격리 — 본인 분석만 본인에게 보입니다</p>
+</div>""", unsafe_allow_html=True)
+
+    tab_login, tab_register, tab_guest = st.tabs(["🔑 로그인", "📝 회원가입", "👀 비회원으로 둘러보기"])
+
+    with tab_login:
+        with st.form("login_form"):
+            u = st.text_input("아이디", key="login_u")
+            p = st.text_input("비밀번호", type="password", key="login_p")
+            if st.form_submit_button("로그인", use_container_width=True):
+                ok, err = auth_login(u, p)
+                if ok:
+                    st.success("로그인 성공!")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {err}")
+
+    with tab_register:
+        st.caption("아이디 3~30자, 비밀번호 6자 이상")
+        with st.form("register_form"):
+            u = st.text_input("새 아이디", key="reg_u")
+            p = st.text_input("새 비밀번호", type="password", key="reg_p")
+            p2 = st.text_input("비밀번호 확인", type="password", key="reg_p2")
+            if st.form_submit_button("회원가입", use_container_width=True):
+                if p != p2:
+                    st.error("❌ 비밀번호가 일치하지 않습니다")
+                else:
+                    ok, err = auth_register(u, p)
+                    if ok:
+                        st.success("회원가입 완료! 자동 로그인됩니다.")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {err}")
+
+    with tab_guest:
+        st.caption("로그인 없이 분석을 사용할 수 있습니다. 비회원 모드에서는 다른 비회원과 분석 이력이 공유될 수 있습니다.")
+        if st.button("비회원 모드로 진입", use_container_width=True):
+            st.session_state["guest_mode"] = True
+            st.rerun()
+
+
+# ── 인증 게이트 — 로그인/비회원모드 둘 다 아니면 게이트만 표시 ──
+if not auth_user_info() and not st.session_state.get("guest_mode"):
+    render_login_gate()
+    st.stop()
+
 # ================================================================
 # 글로벌 CSS 주입 — 네이비(#0F1B2D) + 틸(#0D9488) 테마
 # st.markdown 안의 HTML/CSS는 반드시 왼쪽 정렬해야 한다.
@@ -137,6 +249,30 @@ st.sidebar.markdown("""<div style="text-align:center; padding: 16px 0 8px 0;">
 <h3 style="margin: 4px 0 0 0; font-weight: 700; letter-spacing: -0.3px;">SSAK3</h3>
 <p style="font-size: 12px; opacity: 0.6; margin: 0;">News Credibility Analyzer</p>
 </div>""", unsafe_allow_html=True)
+
+# ── Phase G — 로그인 상태 표시 + 로그아웃 ──
+_user = auth_user_info()
+if _user:
+    st.sidebar.markdown(
+        f"""<div style="text-align:center; padding: 8px 0; background: #0D9488; border-radius: 8px; margin: 0 0 8px 0;">
+<span style="color: white; font-weight: 600;">👤 {_user['username']}</span>
+</div>""",
+        unsafe_allow_html=True,
+    )
+    if st.sidebar.button("로그아웃", use_container_width=True):
+        auth_logout()
+        st.rerun()
+elif st.session_state.get("guest_mode"):
+    st.sidebar.markdown(
+        """<div style="text-align:center; padding: 8px 0; background: #475569; border-radius: 8px; margin: 0 0 8px 0;">
+<span style="color: white; font-weight: 600;">👀 비회원 모드</span>
+</div>""",
+        unsafe_allow_html=True,
+    )
+    if st.sidebar.button("로그인 화면으로", use_container_width=True):
+        st.session_state.pop("guest_mode", None)
+        st.rerun()
+
 st.sidebar.markdown("---")
 
 # ── 페이지 네비게이션 ──
@@ -333,17 +469,18 @@ st.sidebar.markdown("---")
 # DB에서 분석 결과 로드
 # ================================================================
 def load_data():
-    """SQLite DB에서 분석 결과를 DataFrame으로 읽어오기"""
+    """API를 통해 본인 분석 결과만 가져오기 (Phase G — user_id 격리).
+
+    이전: SQLite를 직접 SELECT해서 모든 사용자의 결과를 봤음 → 격리 위반.
+    변경: API의 /results를 호출하면 서버가 Authorization 토큰으로 본인 결과만 필터.
+    """
     try:
-        if not os.path.exists(DB_PATH):
-            return pd.DataFrame()
-        conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql_query(
-            "SELECT * FROM analysis_results ORDER BY analyzed_at DESC",
-            conn
-        )
-        conn.close()
-        return df
+        r = requests.get(f"{API_URL}/results", headers=auth_headers(), timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and data:
+                return pd.DataFrame(data)
+        return pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
@@ -627,6 +764,7 @@ with st.container():
                     resp = requests.post(
                         f"{API_URL}/analyze",
                         json={"url": url_input, "user_label": USER_LABEL},
+                        headers=auth_headers(),
                         timeout=5
                     )
                     if resp.status_code == 200:
@@ -669,6 +807,7 @@ with st.container():
                     resp = requests.post(
                         f"{API_URL}/analyze/bulk",
                         json={"urls": valid_urls, "user_label": USER_LABEL},
+                        headers=auth_headers(),
                         timeout=30
                     )
                     if resp.status_code == 200:
@@ -687,36 +826,16 @@ with st.container():
 # ── 대량 분석 진행 상황 표시 + 자동 새로고침 ──
 auto_refresh = st.checkbox("🔄 5초마다 자동 새로고침", value=False)
 
-# DB에서 jobs 기반 진행률 조회 (jobs 테이블이 없으면 analysis_results로 폴백)
+# Phase G: 본인 분석 진행률을 API의 /jobs/summary로 조회 (사용자별 격리)
 try:
-    if os.path.exists(DB_PATH):
-        _conn = sqlite3.connect(DB_PATH, timeout=5)
-        _cur = _conn.cursor()
-        # jobs 테이블 기반 진행률
-        try:
-            _cur.execute("SELECT COUNT(*) FROM jobs")
-            _total = _cur.fetchone()[0]
-            _cur.execute("SELECT COUNT(*) FROM jobs WHERE status = 'done'")
-            _done = _cur.fetchone()[0]
-            _cur.execute("SELECT COUNT(*) FROM jobs WHERE status = 'failed'")
-            _fail = _cur.fetchone()[0]
-            _cur.execute("SELECT COUNT(*) FROM jobs WHERE status = 'pending'")
-            _pending = _cur.fetchone()[0]
-            _cur.execute("SELECT COUNT(*) FROM jobs WHERE status = 'processing'")
-            _processing = _cur.fetchone()[0]
-        except Exception:
-            # jobs 테이블이 아직 없으면 analysis_results로 폴백
-            _cur.execute("SELECT COUNT(*) FROM analysis_results")
-            _total = _cur.fetchone()[0]
-            _cur.execute("SELECT COUNT(*) FROM analysis_results WHERE status = 'done'")
-            _done = _cur.fetchone()[0]
-            _cur.execute("SELECT COUNT(*) FROM analysis_results WHERE status = 'failed'")
-            _fail = _cur.fetchone()[0]
-            _pending = 0
-            _processing = 0
-        _conn.close()
-
-        # 진행 상황 바 (완료+실패 / 전체)
+    _resp = requests.get(f"{API_URL}/jobs/summary", headers=auth_headers(), timeout=5)
+    _summary = _resp.json() if _resp.status_code == 200 else {}
+    _done = _summary.get('done', 0)
+    _fail = _summary.get('failed', 0)
+    _pending = _summary.get('pending', 0)
+    _processing = _summary.get('processing', 0)
+    _total = _done + _fail + _pending + _processing
+    if _total > 0:
         _processed = _done + _fail
         _progress = _processed / _total if _total > 0 else 0
         status_detail = f"전체: <b>{_total}건</b> &nbsp;|&nbsp; 완료: <b>{_done}건</b> &nbsp;|&nbsp; 실패: <b>{_fail}건</b>"
@@ -1154,12 +1273,22 @@ else:
         ai_positive = ai_data.get('positive', 0)
         ai_negative = ai_data.get('negative', 0)
 
+        # F4: 점수 분해 (단어 기반 + AI 결합) — 산출식 가시화
+        word_s = prov_data.get('word_score')
+        ai_s = prov_data.get('ai_score')
+        breakdown_prov = ""
+        if word_s is not None and ai_s is not None:
+            breakdown_prov = f"""<div class="evidence-row" style="font-size:11px;color:#64748B;margin-top:4px;">
+세부 점수 — 단어사전 <b>{word_s}</b>(×0.5) + AI 논조 <b>{ai_s}</b>(×0.5) = <b>{provocative_s:.1f}점</b>
+</div>"""
+
         evidence2 = f"""<div class="evidence-section">
 <div class="evidence-title">⚡ 자극성 분석 근거</div>
 <div class="evidence-row">감지된 자극적 표현: {prov_tags if prov_tags else '<span style="color:#94A3B8;">없음</span>'}</div>
 {user_dict_row}
 <div class="evidence-row">자극적 표현 비율: <b>{prov_ratio}%</b> (본문 대비)</div>
 <div class="evidence-row">논조 분석 보조지표 (KR-FinBert): 중립 <b>{ai_neutral}%</b> / 부정 <b>{ai_negative}%</b> / 긍정 <b>{ai_positive}%</b></div>
+{breakdown_prov}
 <div class="evidence-row">최종 자극성 점수: <b>{provocative_s:.1f}점</b></div>
 </div>"""
 
@@ -1240,6 +1369,7 @@ if not failed_df.empty:
                     resp = requests.post(
                         f"{API_URL}/analyze",
                         json={"url": row['url'], "user_label": USER_LABEL},
+                        headers=auth_headers(),
                         timeout=5
                     )
                     if resp.status_code == 200:

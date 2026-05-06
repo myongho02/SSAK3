@@ -2,7 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN pip install flask pika
+# flask: 웹 / pika: RabbitMQ / bcrypt: 패스워드 해싱(Phase G 사용자 격리)
+RUN pip install flask pika bcrypt
 
 COPY api_server.py .
 

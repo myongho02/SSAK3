@@ -152,6 +152,16 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ── user_id 컬럼 (Phase G — 사용자 격리): 인증된 회원 식별자 ──
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+
     # ── jobs 테이블: 분석 요청의 생명주기를 추적 ──
     # API가 job을 생성(pending)하고, Worker가 상태를 갱신(processing→done/failed)한다.
     # 대시보드는 jobs 기준으로 진행률을 표시한다.
@@ -379,12 +389,23 @@ def extract_lead_sentences(body, n=3):
 def extract_title_keywords(title):
     """제목에서 핵심 명사(키워드)를 추출한다.
     한국어 형태소 분석기 없이도 동작하도록, 다음 규칙을 적용한다:
-    1. 조사/어미/기호 등 불용어 패턴을 제거
-    2. 2글자 이상의 단어만 키워드로 인정
-    3. 숫자+단위 조합(200억원 등)도 키워드로 포함
+    1. 따옴표·괄호·말줄임표 등 모든 특수기호 제거
+    2. 조사/어미/기호 등 불용어 패턴을 제거
+    3. 2글자 이상의 단어만 키워드로 인정
+    4. 숫자+단위 조합(200억원 등)도 키워드로 포함
+
+    [F1 개선] 따옴표(", ', " ", ' '), 말줄임표(…, ...), 물결(~), 콜론(:),
+    하이픈(-)을 토큰화 전에 모두 공백으로 치환하여 키워드가 깨끗이 분리되도록 함.
     """
-    # 괄호, 특수기호 제거: [속보], (종합), 「」 등
-    cleaned = re.sub(r'[\[\]()「」『』【】<>]', ' ', title)
+    # 다양한 괄호/따옴표/특수기호를 공백으로 치환 (이전: 일부만)
+    cleaned = re.sub(
+        r'[\[\]()「」『』【】<>"\'“”‘’…—–·:;,?!]',
+        ' ', title
+    )
+    # 한자(漢字) 영역도 공백으로 치환 (예: 前총리 → 총리, 李대통령 → 대통령)
+    cleaned = re.sub(r'[一-鿿]+', ' ', cleaned)
+    # 말줄임표 처리 (위에서 …는 처리됐지만 ... 도 대비)
+    cleaned = cleaned.replace('...', ' ')
     # 공백 기준으로 토큰 분리
     tokens = cleaned.split()
 
@@ -399,13 +420,37 @@ def extract_title_keywords(title):
     keywords = []
     for token in tokens:
         # 끝에 붙은 조사 패턴 제거: "정부는" → "정부", "경제를" → "경제"
-        # 1~2글자 조사가 끝에 붙어있으면 떼어냄
-        word = re.sub(r'(은|는|이|가|을|를|의|에|와|과|로|도|만|까지|부터|에서|에게|으로|이다|했다|한다|된다|되는|하는|에는)$', '', token)
+        # F1: '서'(처소격), '에서'도 추가하여 "정부서" → "정부" 매칭 가능
+        word = re.sub(
+            r'(은|는|이|가|을|를|의|에|와|과|로|도|만|까지|부터|에서|에게|으로|서|이다|했다|한다|된다|되는|하는|에는)$',
+            '', token
+        )
         # 2글자 이상이고 불용어가 아닌 단어만 키워드로 인정
         if len(word) >= 2 and word not in stopwords:
             keywords.append(word)
 
     return keywords
+
+
+def keyword_in_body(keyword, body):
+    """키워드가 본문에 있는지 점진적 stem fallback으로 검사한다.
+
+    [F1 개선] 어미 자르기가 정확하지 않아 매칭이 실패할 수 있으므로
+    실패 시 더 짧은 stem(마지막 1자, 2자 자른 형태)으로 재시도하여
+    "확정한" → "확정" 같은 부분 매칭을 가능하게 한다.
+    """
+    if not keyword or not body:
+        return False
+    # 1차: 그대로 매칭
+    if keyword in body:
+        return True
+    # 2차: 마지막 1글자 잘라서 매칭 (3글자 이상일 때만)
+    if len(keyword) >= 3 and keyword[:-1] in body:
+        return True
+    # 3차: 마지막 2글자 잘라서 매칭 (4글자 이상일 때만)
+    if len(keyword) >= 4 and keyword[:-2] in body:
+        return True
+    return False
 
 # ========== 캐시 계층 (논문 abstract 명시: "캐싱 최적화") ==========
 # Worker 컨테이너별 로컬 인메모리 LRU 캐시.
@@ -567,7 +612,8 @@ def analyze_content_similarity(title, body):
 
     if keywords:
         for kw in keywords:
-            if kw in body:
+            # F1: keyword_in_body로 stem fallback 매칭
+            if keyword_in_body(kw, body):
                 if is_negated_in_context(kw, body):
                     negated_list.append(kw)
                 else:
@@ -894,7 +940,11 @@ def analyze_provocative(title, body, source_score=0):
     ratio_per_100 = (weighted_hit_count / total_chars) * 100
 
     # ── 4단계: 단어 기반 점수 산출 ──
-    word_score = max(0, 100 - (ratio_per_100 * 33.3))
+    # [F3 보정] 이전: max(0, 100 - ratio*33.3) → 자극적 단어 0건이면 100점 만점.
+    # 실제 데이터에서 47.8%가 100점에 몰려 변별력이 부족했음.
+    # 새 산식: 95점에서 시작(약간의 패널티) + multiplier 33.3 → 50으로 강화
+    # → 자극적 단어가 적으면 90~95점, 많으면 50점 이하로 분포가 넓어짐
+    word_score = max(0, 95 - (ratio_per_100 * 50))
 
     # ── 5단계: AI 감성분석 점수와 결합 ──
     ai_score, ai_detail = analyze_ai_sentiment(body)
@@ -904,7 +954,10 @@ def analyze_provocative(title, body, source_score=0):
     details = {
         "detected": detected_words,                   # 카테고리별 감지된 단어
         "ratio": round(ratio_per_100, 2),              # 자극적 표현 비율 (%)
-        "ai": ai_detail                                # AI 감성분석 라벨별 확률
+        "ai": ai_detail,                               # AI 감성분석 라벨별 확률
+        # F4: 점수 분해 — 단어 점수와 AI 점수를 분리하여 산출식 가시화
+        "word_score": round(word_score, 1),
+        "ai_score": round(ai_score, 1),
     }
 
     return round(final_score, 1), details
@@ -1043,8 +1096,8 @@ def save_to_db(result):
                 (url, title, body, content_score, provocative_score, source_score,
                  total_score, grade, status, analyzed_at,
                  matched_keywords, detected_provocative, ai_sentiment, source_name,
-                 worker_id, processing_time, cache_stats, user_label)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 worker_id, processing_time, cache_stats, user_label, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 result['url'], result['title'], result['body'][:500],
                 result['content'], result['provocative'], result['source'],
@@ -1057,7 +1110,8 @@ def save_to_db(result):
                 WORKER_ID,                              # 현재 Worker의 ID
                 result.get('processing_time', None),    # 처리 소요 시간 (초)
                 result.get('cache_stats', None),        # 캐시 적중률 스냅샷 (JSON)
-                result.get('user_label', '')            # 분석 요청자 프로필 라벨
+                result.get('user_label', ''),           # 분석 요청자 프로필 라벨
+                result.get('user_id')                   # Phase G — 인증된 회원 식별자
             ))
             conn.commit()
             return True  # 저장 성공
@@ -1203,6 +1257,7 @@ def process_message(ch, method, properties, body):
     url = data['url']
     job_id = data.get('job_id')  # 구버전 메시지는 job_id가 없을 수 있음
     user_label = data.get('user_label', '') or ''  # 프로필 라벨 (E1, 경량 사용자화)
+    user_id = data.get('user_id')  # Phase G — 인증된 회원 식별자 (None=비회원)
     retry_count = data.get('retry_count', 0)  # 현재까지의 재시도 횟수
 
     # ── 처리 시간 측정 시작 ──
@@ -1272,6 +1327,7 @@ def process_message(ch, method, properties, body):
         'processing_time': round(_elapsed, 2),  # 처리 소요 시간 (초, 소수점 2자리)
         'cache_stats': cache_snapshot,  # 처리 완료 시점의 LRU 캐시 적중률 스냅샷
         'user_label': user_label,  # 분석 요청자 프로필 라벨
+        'user_id': user_id,  # Phase G — 인증된 회원 식별자 (None=비회원)
     }
 
     if save_to_db(result):
