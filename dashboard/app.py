@@ -205,6 +205,34 @@ st.sidebar.markdown(f"""<div style="font-size: 13px; line-height: 2;">
 ❌ 실패: <b>{failed_count}건</b>
 </div>""", unsafe_allow_html=True)
 
+# ── 사이드바: 캐시 적중률 (논문 abstract "캐싱 최적화" 효과) ──
+# 가장 최근 분석 결과의 cache_stats 스냅샷을 사이드바에 표시.
+# 발표 시연 시 캐시 효과를 정량적으로 보여줄 수 있다.
+if not df.empty and 'cache_stats' in df.columns:
+    latest_cache = None
+    for _, row in df.iterrows():
+        cs_raw = row.get('cache_stats')
+        if cs_raw:
+            try:
+                latest_cache = json.loads(cs_raw)
+                break
+            except Exception:
+                continue
+    if latest_cache:
+        nli = latest_cache.get('nli', {})
+        sent = latest_cache.get('sentiment', {})
+        src = latest_cache.get('source', {})
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("**⚡ 캐시 적중률**")
+        st.sidebar.markdown(f"""<div style="font-size: 12px; line-height: 1.8;">
+🧠 NLI: <b>{nli.get('hit_rate_pct', 0)}%</b> ({nli.get('hits',0)}/{nli.get('hits',0)+nli.get('misses',0)})<br>
+💬 감성: <b>{sent.get('hit_rate_pct', 0)}%</b> ({sent.get('hits',0)}/{sent.get('hits',0)+sent.get('misses',0)})<br>
+🌐 출처: <b>{src.get('hit_rate_pct', 0)}%</b> ({src.get('hits',0)}/{src.get('hits',0)+src.get('misses',0)})
+</div>
+<div style="font-size: 10px; color: #94A3B8; margin-top: 4px;">
+최근 처리 Worker 기준 / 컨테이너별 LRU 캐시
+</div>""", unsafe_allow_html=True)
+
 # ================================================================
 # 성능 측정 페이지 — 벤치마크 결과 시각화
 # ================================================================
@@ -869,11 +897,15 @@ else:
             ai_data = {}
         source_info = str(row.get('source_name', '') or '')
 
-        # ── 섹션 1: 본문 일치도 근거 HTML 생성 ──
+        # ── 섹션 1: 본문 일치도 근거 HTML 생성 (NLI + 코사인 + 키워드) ──
         all_kw = kw_data.get('keywords', [])
         matched_kw = kw_data.get('matched', [])
         negated_kw = kw_data.get('negated', [])  # 부정어로 매칭 취소된 키워드
         cosine_raw = kw_data.get('cosine_raw', 0)
+        nli = kw_data.get('nli', {}) or {}
+        nli_score_v = kw_data.get('nli_score', None)
+        cosine_score_v = kw_data.get('cosine_score', None)
+        keyword_score_v = kw_data.get('keyword_score', None)
         kw_tags = ""
         for kw in all_kw:
             if kw in matched_kw:
@@ -884,16 +916,39 @@ else:
             else:
                 kw_tags += f'<span class="kw-tag missed">{kw} ✗</span>'
 
+        # NLI 확률 시각화 (entailment/neutral/contradiction 막대)
+        nli_html = ""
+        if nli:
+            ent = float(nli.get('entailment', 0)) * 100
+            neu = float(nli.get('neutral', 0)) * 100
+            con = float(nli.get('contradiction', 0)) * 100
+            nli_html = f"""<div class="evidence-row" style="margin-top:6px;">
+<b>🧠 NLI 함의 분석</b> — 제목이 본문 핵심을 논리적으로 포함하는지 판정
+</div>
+<div class="evidence-row" style="display:flex;gap:8px;align-items:center;font-size:11px;">
+<span style="background:#D1FAE5;color:#065F46;padding:2px 8px;border-radius:4px;font-weight:600;">함의 {ent:.1f}%</span>
+<span style="background:#FEF3C7;color:#92400E;padding:2px 8px;border-radius:4px;font-weight:600;">중립 {neu:.1f}%</span>
+<span style="background:#FEE2E2;color:#991B1B;padding:2px 8px;border-radius:4px;font-weight:600;">모순 {con:.1f}%</span>
+</div>"""
+
+        # 보조 신호 점수 분해 (NLI 60% + 코사인 20% + 키워드 20%)
+        breakdown_html = ""
+        if nli_score_v is not None and cosine_score_v is not None and keyword_score_v is not None:
+            breakdown_html = f"""<div class="evidence-row" style="font-size:11px;color:#64748B;margin-top:4px;">
+세부 점수 — NLI <b>{nli_score_v}</b>(×0.6) + 코사인 <b>{cosine_score_v}</b>(×0.2) + 키워드 <b>{keyword_score_v}</b>(×0.2) = <b>{content_s:.1f}점</b>
+</div>"""
+
         evidence1 = ""
-        if all_kw:
+        if all_kw or nli:
             match_pct = round(len(matched_kw) / len(all_kw) * 100, 1) if all_kw else 0
             negated_info = f" (부정어 근접으로 {len(negated_kw)}개 취소)" if negated_kw else ""
+            keywords_row = f'<div class="evidence-row">제목 키워드: {kw_tags}</div><div class="evidence-row">본문에서 발견된 키워드: <b>{len(matched_kw)}개</b> / 전체 {len(all_kw)}개 (매칭률 <b>{match_pct}%</b>){negated_info}</div>' if all_kw else ''
             evidence1 = f"""<div class="evidence-section">
 <div class="evidence-title">📝 본문 일치도 분석 근거</div>
-<div class="evidence-row">제목 키워드: {kw_tags}</div>
-<div class="evidence-row">본문에서 발견된 키워드: <b>{len(matched_kw)}개</b> / 전체 {len(all_kw)}개 (매칭률 <b>{match_pct}%</b>){negated_info}</div>
+{nli_html}
+{keywords_row}
 <div class="evidence-row">제목-본문 코사인 유사도: <b>{cosine_raw}</b></div>
-<div class="evidence-row">최종 본문 일치도: <b>{content_s:.1f}점</b></div>
+{breakdown_html}
 </div>"""
 
         # ── 섹션 2: 자극성 분석 근거 HTML 생성 ──

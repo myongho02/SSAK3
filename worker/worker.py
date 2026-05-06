@@ -5,7 +5,9 @@ import os
 import re
 import time
 import socket       # 컨테이너 hostname(=컨테이너 ID) 조회용
+import hashlib      # 캐시 키 생성용 (긴 텍스트 → 짧은 해시)
 import requests
+from functools import lru_cache
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from newspaper import Article
@@ -42,12 +44,32 @@ print(f"[시스템] {WORKER_TAG} 시작 — 컨테이너 ID: {CONTAINER_ID}")
 print(f"[시스템] 독립 컨테이너에서 실행 중 (분산 병렬 처리)")
 print(f"{'='*60}")
 
-print(f"{WORKER_TAG} AI 보조지표 모델 로딩 중... (처음에 1~2분 걸릴 수 있음)")
+print(f"{WORKER_TAG} 자극성 보조모델(KR-FinBert-SC) 로딩 중... (처음에 1~2분 걸릴 수 있음)")
 MODEL_NAME = "snunlp/KR-FinBert-SC"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
 model.eval()  # 추론 모드 전환 — dropout 등 학습 전용 레이어 비활성화
-print(f"{WORKER_TAG} AI 보조지표 모델 로딩 완료!")
+print(f"{WORKER_TAG} 자극성 보조모델 로딩 완료!")
+
+# ========== 본문 일치도 NLI 모델 로딩 ==========
+# 논문 2.2 명시: "자연어 추론(NLI) 모델로 제목이 본문 핵심을 논리적으로 포함하는지"
+# MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli:
+#   - 다국어 NLI 모델 (XNLI에 한국어 포함)
+#   - ~110MB로 가벼움 → Worker 컨테이너 부담 적음
+#   - 3-class 분류: entailment(함의) / neutral(중립) / contradiction(모순)
+#
+# [사용 방식] premise=본문 리드, hypothesis=제목 → entailment 확률을 본문 일치도 메인 신호로
+# - entailment 높음 → 제목이 본문 핵심을 논리적으로 포함 → 일치도 점수↑
+# - contradiction 높음 → 제목과 본문이 어긋남(낚시성) → 일치도 점수↓
+print(f"{WORKER_TAG} 본문 일치도 NLI 모델 로딩 중...")
+NLI_MODEL_NAME = "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli"
+nli_tokenizer = AutoTokenizer.from_pretrained(NLI_MODEL_NAME)
+nli_model = AutoModelForSequenceClassification.from_pretrained(NLI_MODEL_NAME)
+nli_model.eval()
+# 라벨 매핑 확인 (XNLI 표준: {0:'entailment', 1:'neutral', 2:'contradiction'})
+NLI_ID2LABEL = nli_model.config.id2label
+print(f"{WORKER_TAG} NLI 라벨 매핑: {NLI_ID2LABEL}")
+print(f"{WORKER_TAG} 본문 일치도 NLI 모델 로딩 완료!")
 
 # ========== DB 초기화 ==========
 DB_PATH = "/app/data/results.db"
@@ -110,6 +132,14 @@ def init_db():
         cursor.execute("ALTER TABLE analysis_results ADD COLUMN processing_time REAL")
     except sqlite3.OperationalError:
         pass  # 이미 존재하는 컬럼 — 무시
+
+    # ── cache_stats 컬럼: 처리 완료 시점의 캐시 적중률 스냅샷 (JSON) ──
+    # 논문 abstract "캐싱 최적화" 효과를 대시보드에서 시각화하기 위한 데이터
+    # 형식: {"nli":{"hit_rate_pct":80.5,...}, "sentiment":{...}, "source":{...}}
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN cache_stats TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # ── jobs 테이블: 분석 요청의 생명주기를 추적 ──
     # API가 job을 생성(pending)하고, Worker가 상태를 갱신(processing→done/failed)한다.
@@ -361,65 +391,188 @@ def extract_title_keywords(title):
 
     return keywords
 
-def analyze_content_similarity(title, body):
-    """지표 1: 본문 일치도 (45%) — 코사인 유사도 + 키워드 매칭 결합
+# ========== 캐시 계층 (논문 abstract 명시: "캐싱 최적화") ==========
+# Worker 컨테이너별 로컬 인메모리 LRU 캐시.
+# 같은 텍스트(예: 자주 인용되는 본문 리드 또는 같은 출처 도메인)가 반복 입력될 때
+# 모델 추론을 생략하여 처리 시간과 GPU/CPU 부담을 줄인다.
+#
+# [캐시 대상]
+# 1. NLI 추론 — (본문 리드 해시, 제목 해시) 페어 키
+# 2. 감성 분석 추론 — 본문 리드 해시 키
+# 3. 출처 분류 — (URL, source_name) 페어 키 (도메인 매핑 룩업 캐시)
+#
+# [성능 효과]
+# 같은 도메인의 다른 기사가 들어와도 출처 분류는 즉시 캐시 히트.
+# 같은 본문이 재분석되거나 비슷한 리드를 가진 기사가 많을 때 NLI/감성 캐시 히트.
+#
+# 컨테이너 메모리 제약(LRU maxsize)으로 무제한 누적 방지.
+NLI_CACHE_MAX = 512
+SENT_CACHE_MAX = 512
+SRC_CACHE_MAX = 256
 
-    [개선된 분석 방법]
-    1. 코사인 유사도 (50%): 제목과 본문 첫 3문장(리드)만 비교
-    2. 키워드 매칭 (50%): 제목의 핵심 명사가 본문에 등장하는 비율
+
+def _hash_text(text):
+    """긴 텍스트를 짧은 해시 키로 변환 (lru_cache 메모리 절약)"""
+    return hashlib.md5(text.encode('utf-8', errors='ignore')).hexdigest()
+
+
+def get_cache_stats():
+    """3개 캐시(NLI/감성/출처)의 적중 통계를 dict로 반환.
+
+    발표/시연에서 "캐싱 최적화" 효과를 정량적으로 보여주기 위한 헬퍼.
+    각 캐시의 hits/misses/currsize/maxsize를 노출.
+    """
+    stats = {}
+    for name, fn in [("nli", _nli_inference_cached),
+                     ("sentiment", _sentiment_inference_cached),
+                     ("source", _source_classify_cached)]:
+        ci = fn.cache_info()
+        total = ci.hits + ci.misses
+        hit_rate = round(ci.hits / total * 100, 1) if total > 0 else 0.0
+        stats[name] = {
+            "hits": ci.hits, "misses": ci.misses,
+            "currsize": ci.currsize, "maxsize": ci.maxsize,
+            "hit_rate_pct": hit_rate,
+        }
+    return stats
+
+
+@lru_cache(maxsize=NLI_CACHE_MAX)
+def _nli_inference_cached(premise_hash, hypothesis_hash, premise, hypothesis):
+    """NLI 추론을 캐시한다. 키는 텍스트 해시 (직접 텍스트로 캐시하면 메모리↑).
+
+    Returns: (entailment_p, neutral_p, contradiction_p)
+    """
+    inputs = nli_tokenizer(
+        premise, hypothesis,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=256
+    )
+    with torch.no_grad():
+        outputs = nli_model(**inputs)
+    probs = torch.softmax(outputs.logits, dim=-1)[0]
+
+    label_probs = {NLI_ID2LABEL[i].lower(): round(probs[i].item(), 4)
+                   for i in range(len(probs))}
+    return (
+        label_probs.get("entailment", 0.0),
+        label_probs.get("neutral", 0.0),
+        label_probs.get("contradiction", 0.0),
+    )
+
+
+def analyze_nli_entailment(premise, hypothesis):
+    """제목이 본문 핵심을 논리적으로 포함하는지 NLI 모델로 판단한다.
+
+    [논문 정렬]
+    논문 2.2: "자연어 추론(NLI) 기술로 제목이 본문 핵심을 논리적으로 포함하는지를
+    따져보며, 내용이 본문과 어긋나거나 무관하면 점수를 크게 깎는다 [Bowman 2015]"
+
+    Args:
+        premise: 본문 리드 3문장 (전제 — 무엇이 사실인가)
+        hypothesis: 제목 (가설 — 제목이 사실로 따라오는가)
+
+    Returns:
+        (score, details)
+        score: 0~100 (entailment 비율이 높을수록 높음, contradiction이 높으면 큰 감점)
+        details: {"entailment": 0.85, "neutral": 0.10, "contradiction": 0.05}
+    """
+    # ── 빈 입력 폴백 ──
+    if not premise or not hypothesis:
+        return 50.0, {"entailment": 0.33, "neutral": 0.33, "contradiction": 0.33}
+
+    try:
+        # 캐시된 추론 호출 (해시 키 기반 LRU)
+        ph = _hash_text(premise)
+        hh = _hash_text(hypothesis)
+        ent, neu, con = _nli_inference_cached(ph, hh, premise, hypothesis)
+
+        # ── 점수 산식 ──
+        # entailment 강하면 100점에 가깝게, contradiction 강하면 0점에 가깝게
+        # neutral은 중립(50점) 기여 — 무관한 제목은 중간 점수
+        # 직관: 제목이 본문 핵심을 논리적으로 포함 → 만점, 어긋남 → 큰 감점
+        nli_score = (ent * 100.0) + (neu * 50.0) + (con * 0.0)
+        nli_score = max(0.0, min(100.0, nli_score))
+
+        return round(nli_score, 1), {
+            "entailment": ent, "neutral": neu, "contradiction": con
+        }
+    except Exception as e:
+        print(f"{WORKER_TAG} NLI 추론 오류: {e}")
+        return 50.0, {"entailment": 0.33, "neutral": 0.33, "contradiction": 0.33}
+
+
+def analyze_content_similarity(title, body):
+    """지표 1: 본문 일치도 (45%) — NLI 메인 + 코사인 유사도/키워드 매칭 보조
+
+    [논문 정렬]
+    논문 2.2의 NLI 기반 분석을 메인 신호로 사용하면서, 기존 TF-IDF 코사인 유사도와
+    키워드 매칭은 보조 신호로 결합 → 모델 단일 의존도 완화 + XAI 근거 풍부화.
+
+    [결합 비율]
+    1. NLI entailment (60%): 제목 ↔ 본문 리드의 논리적 함의 관계
+    2. TF-IDF 코사인 유사도 (20%): 어휘 수준 의미 유사도
+    3. 키워드 매칭 (20%): 제목 핵심 명사의 본문 등장 비율 (부정어 근접 체크 포함)
 
     Returns: (최종 점수, 상세 정보 dict)
-        상세 정보: 제목 키워드, 매칭된 키워드, 코사인 유사도 원본값
     """
     # ── 빈 입력 처리 ──
     if not title or not body:
-        return 0.0, {"keywords": [], "matched": [], "cosine_raw": 0.0}
+        return 0.0, {
+            "keywords": [], "matched": [], "negated": [],
+            "cosine_raw": 0.0, "nli": {"entailment": 0, "neutral": 0, "contradiction": 0},
+            "nli_score": 0, "cosine_score": 0, "keyword_score": 0
+        }
 
-    # ── 1단계: 코사인 유사도 (제목 vs 리드 3문장) ──
+    # ── 본문 리드 3문장 추출 (NLI/TF-IDF 공통 입력) ──
     lead = extract_lead_sentences(body, n=3)
     if not lead:
         lead = body[:200]
 
-    vectorizer = TfidfVectorizer()
-    vectors = vectorizer.fit_transform([title, lead])
-    cosine_score = cosine_similarity(vectors[0], vectors[1])[0][0]
-    cosine_score_scaled = cosine_score * 100
+    # ── 1단계: NLI 함의 분석 (메인 신호, 60%) ──
+    nli_score, nli_detail = analyze_nli_entailment(lead, title)
 
-    # ── 2단계: 키워드 매칭 ──
+    # ── 2단계: TF-IDF 코사인 유사도 (보조, 20%) ──
+    try:
+        vectorizer = TfidfVectorizer()
+        vectors = vectorizer.fit_transform([title, lead])
+        cosine_raw = cosine_similarity(vectors[0], vectors[1])[0][0]
+        cosine_score = cosine_raw * 100
+    except Exception:
+        cosine_raw = 0.0
+        cosine_score = 0.0
+
+    # ── 3단계: 키워드 매칭 (보조, 20%) — 부정어 근접 체크 포함 ──
     keywords = extract_title_keywords(title)
-
-    if not keywords:
-        return round(cosine_score_scaled, 1), {
-            "keywords": [], "matched": [],
-            "cosine_raw": round(cosine_score, 4)
-        }
-
-    # 각 키워드가 본문에 등장하는지 확인하고, 매칭된 키워드 목록을 기록
-    # [개선] 부정어 근접 체크: 키워드 앞뒤 5글자 이내에 부정어가 있으면
-    # 제목과 본문의 의미가 반대일 수 있으므로 매칭을 취소한다
     matched_list = []
-    negated_list = []  # 부정어에 의해 매칭 취소된 키워드
-    for kw in keywords:
-        if kw in body:
-            if is_negated_in_context(kw, body):
-                # 부정어가 근처에 있으므로 매칭 취소
-                negated_list.append(kw)
-            else:
-                matched_list.append(kw)
+    negated_list = []
 
-    match_ratio = len(matched_list) / len(keywords)
-    keyword_score = match_ratio * 100
+    if keywords:
+        for kw in keywords:
+            if kw in body:
+                if is_negated_in_context(kw, body):
+                    negated_list.append(kw)
+                else:
+                    matched_list.append(kw)
+        keyword_score = (len(matched_list) / len(keywords)) * 100
+    else:
+        keyword_score = 50.0  # 키워드 추출 실패 시 중립값
 
-    # ── 3단계: 결합 ──
-    final_score = (cosine_score_scaled * 0.5) + (keyword_score * 0.5)
+    # ── 4단계: 가중 결합 (NLI 60% + 코사인 20% + 키워드 20%) ──
+    final_score = (nli_score * 0.6) + (cosine_score * 0.2) + (keyword_score * 0.2)
     final_score = max(0, min(100, final_score))
 
-    # ── 상세 정보를 함께 반환 (대시보드에서 분석 근거로 표시) ──
     details = {
-        "keywords": keywords,           # 제목에서 추출한 전체 키워드
-        "matched": matched_list,         # 본문에서 발견된 키워드
-        "negated": negated_list,         # 부정어로 매칭 취소된 키워드
-        "cosine_raw": round(cosine_score, 4)  # 코사인 유사도 원본값 (0~1)
+        "keywords": keywords,                   # 제목 추출 키워드
+        "matched": matched_list,                 # 본문 매칭 키워드
+        "negated": negated_list,                 # 부정어로 매칭 취소된 키워드
+        "cosine_raw": round(cosine_raw, 4),     # 코사인 유사도 원본 (0~1)
+        "nli": nli_detail,                       # NLI 라벨별 확률
+        "nli_score": round(nli_score, 1),       # NLI 점수 (0~100)
+        "cosine_score": round(cosine_score, 1), # 코사인 점수 (0~100)
+        "keyword_score": round(keyword_score, 1) # 키워드 점수 (0~100)
     }
 
     return round(final_score, 1), details
@@ -465,6 +618,23 @@ def _run_sentiment_model(texts):
 
     return results
 
+@lru_cache(maxsize=SENT_CACHE_MAX)
+def _sentiment_inference_cached(lead_hash, lead):
+    """감성 분석 모델 추론 결과를 캐시한다 (논문 abstract 명시 "캐싱 최적화").
+
+    같은 본문 리드가 재분석되거나 같은 인용 문단이 여러 기사에 등장할 때
+    KR-FinBert-SC 추론을 생략한다.
+
+    Returns: (neutral_p, positive_p, negative_p) — 0~1 사이 확률값
+    """
+    probs = _run_sentiment_model([lead])[0]
+    return (
+        probs.get("neutral", 0.0),
+        probs.get("positive", 0.0),
+        probs.get("negative", 0.0),
+    )
+
+
 def analyze_ai_sentiment(text):
     """자극성/논조 보조지표 — KR-FinBert-SC 모델로 기사 논조를 분류
 
@@ -477,6 +647,7 @@ def analyze_ai_sentiment(text):
       (뉴스는 역피라미드 구조라 리드에 핵심 논조가 집중됨)
     - torch.no_grad()로 그래디언트 비활성화 → 메모리·속도 최적화
     - softmax로 3-class 정확한 확률 계산 (pipeline의 근사치 대체)
+    - LRU 캐시: 같은 본문 리드 재추론 생략 (논문 abstract "캐싱 최적화" 명시 충족)
 
     Returns: (점수, 상세 정보 dict)
         상세 정보: 각 라벨별 확률값 (대시보드에서 근거로 표시)
@@ -487,8 +658,10 @@ def analyze_ai_sentiment(text):
         if not lead or len(lead.strip()) < 10:
             lead = text[:300]  # 리드 추출 실패 시 앞 300자 폴백
 
-        # 단건 추론 — _run_sentiment_model은 배치도 지원하지만 여기서는 1건씩
-        probs = _run_sentiment_model([lead])[0]
+        # 캐시된 추론 호출 (해시 키 기반 LRU)
+        lead_h = _hash_text(lead)
+        neutral_p, positive_p, negative_p = _sentiment_inference_cached(lead_h, lead)
+        probs = {"neutral": neutral_p, "positive": positive_p, "negative": negative_p}
 
         # ── 라벨별 확률값을 백분율로 변환 (대시보드 표시용) ──
         sentiment_detail = {
@@ -721,6 +894,16 @@ def analyze_provocative(title, body, source_score=0):
     return round(final_score, 1), details
 
 def analyze_source(url, source_name=""):
+    """출처 신뢰도 분석 진입점.
+    캐시 효율을 높이기 위해 (도메인, source_name) 페어를 캐시 키로 사용한다.
+    같은 언론사의 다른 기사도 즉시 캐시 히트.
+    """
+    domain = urlparse(url).netloc.replace("www.", "") if url else ""
+    return _source_classify_cached(domain, source_name or "")
+
+
+@lru_cache(maxsize=SRC_CACHE_MAX)
+def _source_classify_cached(domain, source_name):
     """지표 3: 출처 신뢰도 (20%) — 원본 언론사명 기반 신뢰도 판정
 
     규칙 기반 분석으로, AI 모델은 사용하지 않는다.
@@ -787,12 +970,13 @@ def analyze_source(url, source_name=""):
             if name in source_name or source_name in name:
                 return 65.0, "등록 매체"
 
-    # ── 2단계: URL 도메인으로 폴백 ──
+    # ── 2단계: 도메인으로 폴백 ──
+    # (wrapper analyze_source가 도메인을 키로 전달하므로 변수 이름은 domain)
     for name in MAJOR_SOURCES:
-        if name in url:
+        if name in domain:
             return 85.0, "주요 언론사"
     for name in REGISTERED_SOURCES:
-        if name in url:
+        if name in domain:
             return 65.0, "등록 매체"
 
     # ── 3단계: 출처 불명 ──
@@ -843,8 +1027,8 @@ def save_to_db(result):
                 (url, title, body, content_score, provocative_score, source_score,
                  total_score, grade, status, analyzed_at,
                  matched_keywords, detected_provocative, ai_sentiment, source_name,
-                 worker_id, processing_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 worker_id, processing_time, cache_stats)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 result['url'], result['title'], result['body'][:500],
                 result['content'], result['provocative'], result['source'],
@@ -855,7 +1039,8 @@ def save_to_db(result):
                 result.get('ai_sentiment', ''),
                 result.get('source_name', ''),
                 WORKER_ID,                              # 현재 Worker의 ID
-                result.get('processing_time', None)     # 처리 소요 시간 (초)
+                result.get('processing_time', None),    # 처리 소요 시간 (초)
+                result.get('cache_stats', None)         # 캐시 적중률 스냅샷 (JSON)
             ))
             conn.commit()
             return True  # 저장 성공
@@ -1048,6 +1233,9 @@ def process_message(ch, method, properties, body):
     # ── 처리 시간 측정 완료 ──
     _elapsed = time.perf_counter() - _start_time
 
+    # 캐시 통계 스냅샷 (논문 "캐싱 최적화" 효과 가시화)
+    cache_snapshot = json.dumps(get_cache_stats(), ensure_ascii=False)
+
     result = {
         'url': url,
         'title': title,
@@ -1064,6 +1252,7 @@ def process_message(ch, method, properties, body):
         'ai_sentiment': json.dumps(provocative_details.get('ai', {}), ensure_ascii=False),
         'source_name': f"{source_name}|{source_class}",  # "연합뉴스|주요 언론사" 형태
         'processing_time': round(_elapsed, 2),  # 처리 소요 시간 (초, 소수점 2자리)
+        'cache_stats': cache_snapshot,  # 처리 완료 시점의 LRU 캐시 적중률 스냅샷
     }
 
     if save_to_db(result):
@@ -1083,6 +1272,11 @@ def process_message(ch, method, properties, body):
         update_job_status(job_id, 'done', result_id=rid)
         print(f"{WORKER_TAG} 처리 완료: {_elapsed:.1f}초 — {title}")
         print(f"         본문일치: {content:.1f} | 자극성: {provocative:.1f} | 출처: {source:.1f} | 종합: {total:.1f}점 ({grade})")
+        # ── 캐시 적중률 로그 (논문 abstract "캐싱 최적화" 효과 추적) ──
+        cs = get_cache_stats()
+        print(f"         캐시 — NLI: {cs['nli']['hit_rate_pct']}% (h{cs['nli']['hits']}/m{cs['nli']['misses']}) | "
+              f"감성: {cs['sentiment']['hit_rate_pct']}% (h{cs['sentiment']['hits']}/m{cs['sentiment']['misses']}) | "
+              f"출처: {cs['source']['hit_rate_pct']}% (h{cs['source']['hits']}/m{cs['source']['misses']})")
         ch.basic_ack(delivery_tag=method.delivery_tag)
     else:
         print(f"{WORKER_TAG} DB 저장 실패 — 메시지 requeue: {url}")

@@ -75,6 +75,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # 이미 존재하는 컬럼
 
+    # ── cache_stats 컬럼: 캐시 적중률 스냅샷 (JSON, 논문 "캐싱 최적화") ──
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN cache_stats TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
