@@ -204,6 +204,11 @@ def convert_to_mobile_url(url):
     url = url.replace("news.naver.com", "m.news.naver.com")
     # 중복 치환 방지: m.m.news... 가 되지 않도록
     url = url.replace("m.m.news", "m.news")
+    # 모바일 URL은 /mnews/ 가 빠지는 형식: m.news.naver.com/article/... 이 정상
+    # 원본이 /mnews/article/이면 /article/로 정리
+    url = url.replace("m.news.naver.com/mnews/article/", "m.news.naver.com/article/")
+    # comment 경로도 모바일 본문으로 리다이렉트되어야 정상 크롤링됨
+    url = url.replace("/article/comment/", "/article/")
     return url
 
 

@@ -28,7 +28,7 @@ API_URL = "http://localhost:5001"                 # 호스트에서 접근하는
 DB_PATH = None                                     # Docker 볼륨 내 DB 경로 (아래에서 자동 탐색)
 RESULT_FILE = "benchmark_results.json"             # 결과 저장 파일
 NUM_ARTICLES = 20                                  # 테스트 기사 수
-WORKER_COUNTS = [1, 3, 5]                          # 테스트할 Worker 수
+WORKER_COUNTS = [1, 2, 3]                          # 테스트할 Worker 수 (docker-compose.yml에 정의된 worker-1/2/3에 맞춤)
 POLL_INTERVAL = 2                                  # DB 폴링 간격 (초)
 TIMEOUT = 600                                      # 최대 대기 시간 (초)
 
@@ -100,6 +100,9 @@ def reset_db():
     API 컨테이너에서 sqlite3 명령으로 테이블을 비운다.
     """
     print("  DB 초기화 중...")
+    # analysis_results와 jobs 테이블을 모두 비워야 한다.
+    # jobs를 비우지 않으면 status='done'/'pending'/'processing' 으로 남아있어
+    # API의 /analyze/bulk가 모든 URL을 skip 처리한다 (큐에 0개 전송).
     subprocess.run(
         ["docker", "compose", "exec", "-T", "api",
          "python3", "-c",
@@ -107,48 +110,85 @@ def reset_db():
          "db='/app/data/results.db'; "
          "conn=sqlite3.connect(db); "
          "conn.execute('DELETE FROM analysis_results'); "
+         "conn.execute('DELETE FROM jobs'); "
          "conn.commit(); conn.close(); "
          "print('DB cleared')"],
         capture_output=True, text=True,
-        cwd="/Users/pespam/SSAK3"
+        cwd=os.path.dirname(os.path.abspath(__file__))
+    )
+
+
+def purge_queue():
+    """RabbitMQ 큐(news_queue)에 남아있는 메시지를 모두 제거한다.
+
+    Worker를 stop했다가 다시 켜는 사이에 큐에 미처리 메시지가 남아있으면
+    다음 단계의 측정 시작 시점부터 즉시 처리되어 소요 시간이 왜곡된다.
+    """
+    print("  RabbitMQ 큐 비우는 중...")
+    subprocess.run(
+        ["docker", "compose", "exec", "-T", "rabbitmq",
+         "rabbitmqctl", "purge_queue", "news_queue"],
+        capture_output=True, text=True,
+        cwd=os.path.dirname(os.path.abspath(__file__))
     )
 
 
 def get_done_count():
-    """API를 통해 현재 분석 완료된 기사 수를 조회한다."""
+    """현재 단계에서 완료/실패된 jobs 수를 반환한다.
+
+    /results는 누적 결과라서 이전 단계분이 섞여있을 수 있다.
+    /jobs는 reset_db에서 매번 비워지므로 이번 단계의 정확한 처리 건수를 측정 가능.
+    pending/processing 외의 상태(done/failed)를 모두 "처리 완료"로 계산.
+    """
     try:
-        resp = requests.get(f"{API_URL}/results", timeout=5)
+        resp = requests.get(f"{API_URL}/jobs/summary", timeout=5)
         if resp.status_code == 200:
-            results = resp.json()
-            if isinstance(results, list):
-                return len(results)
+            s = resp.json()
+            # done + failed = 처리가 끝난 건. 타임아웃 방지용으로 failed도 포함.
+            return s.get("done", 0) + s.get("failed", 0)
     except Exception:
         pass
     return 0
 
 
+# docker-compose.yml은 worker-1/2/3을 개별 서비스로 명시 정의하므로
+# `--scale worker=N`이 안 먹힌다. 대신 worker-1, worker-2, ... 를 N개까지만 켜는 방식.
+ALL_WORKERS = ["worker-1", "worker-2", "worker-3"]
+MAX_WORKERS = len(ALL_WORKERS)
+
+
 def start_workers(n):
-    """Worker를 N개로 스케일링하여 시작한다."""
-    print(f"  Worker {n}개 시작 중...")
+    """Worker를 N개 시작한다 (worker-1 ~ worker-N).
+
+    docker-compose.yml에 worker-1/2/3이 개별 서비스로 정의되어 있어
+    `--scale`이 호환되지 않으므로, 명시적으로 N개 서비스명만 start한다.
+    """
+    if n > MAX_WORKERS:
+        print(f"  [경고] 요청 Worker 수 {n}개가 정의된 최대({MAX_WORKERS})를 초과합니다. {MAX_WORKERS}개로 제한합니다.")
+        n = MAX_WORKERS
+    targets = ALL_WORKERS[:n]
+    print(f"  Worker {n}개 시작 중... ({', '.join(targets)})")
     subprocess.run(
-        ["docker", "compose", "up", "-d", "--scale", f"worker={n}", "--no-recreate", "worker"],
+        ["docker", "compose", "start", *targets],
         capture_output=True, text=True,
-        cwd="/Users/pespam/SSAK3"
+        cwd=os.path.dirname(os.path.abspath(__file__))
     )
-    # Worker가 모델 로딩을 완료할 때까지 대기
-    time.sleep(5)
+    # Worker가 RabbitMQ에 연결되고 모델 로딩(이미지 캐시된 경우 < 5초)이 끝날 때까지 대기
+    # 상위 process_message 핸들러에 큐 대기 메시지가 보일 때까지 폴링하면 더 정확하지만
+    # 시간 측정 단순화를 위해 고정 슬립 사용
+    time.sleep(8)
 
 
 def stop_workers():
-    """모든 Worker를 정지한다."""
+    """모든 Worker(worker-1~3)를 정지한다."""
     print("  Worker 정지 중...")
     subprocess.run(
-        ["docker", "compose", "stop", "worker"],
+        ["docker", "compose", "stop", *ALL_WORKERS],
         capture_output=True, text=True,
-        cwd="/Users/pespam/SSAK3"
+        cwd=os.path.dirname(os.path.abspath(__file__))
     )
     # 완전히 정지될 때까지 잠시 대기
-    time.sleep(2)
+    time.sleep(3)
 
 
 def send_bulk_urls(urls):
@@ -202,23 +242,28 @@ def run_benchmark(urls, worker_count):
     print(f"[벤치마크] Worker {worker_count}개 — {len(urls)}개 기사")
     print(f"{'='*50}")
 
-    # 1) DB 초기화
-    reset_db()
-
-    # 2) Worker 시작
+    # 1) Worker 정지 (큐 컨슈머 끊기)
     stop_workers()
+
+    # 2) DB + RabbitMQ 큐 초기화 (이전 단계 잔재물 제거)
+    reset_db()
+    purge_queue()
+
+    # 3) Worker 지정 개수 시작
     start_workers(worker_count)
 
-    # 3) URL 전송
+    # 4) URL 전송 — 시간 측정 시작
     print(f"  {len(urls)}개 URL 전송 중...")
+    t_start = time.time()
     result = send_bulk_urls(urls)
     queued = result.get("count", 0)
     print(f"  큐에 {queued}개 전송 완료")
 
-    # 4) 완료 대기 및 시간 측정
-    total_time = wait_for_completion(len(urls))
+    # 5) 완료 대기 — 전송 시점부터 done >= len(urls)이 될 때까지의 경과 시간
+    _ = wait_for_completion(len(urls))
+    total_time = time.time() - t_start
 
-    # 5) Worker 정지
+    # 6) Worker 정지
     stop_workers()
 
     avg_time = total_time / len(urls) if urls else 0
@@ -295,7 +340,7 @@ def main():
         ["docker", "compose", "cp",
          output_path, "dashboard:/app/data/benchmark_results.json"],
         capture_output=True, text=True,
-        cwd="/Users/pespam/SSAK3"
+        cwd=os.path.dirname(os.path.abspath(__file__))
     )
     print("대시보드 컨테이너에 결과 복사 완료")
     print("\n대시보드 사이드바에서 '성능 측정' 메뉴를 확인하세요.")
