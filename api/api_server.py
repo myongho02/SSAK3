@@ -195,6 +195,13 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ── J4 분석 결과 공유 토큰: 본인이 자기 결과를 read-only 링크로 공유 ──
+    # share_token이 NULL이면 비공개, 값이 있으면 누구나 그 토큰으로 read-only 조회 가능
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN share_token TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -862,6 +869,108 @@ def get_result(result_id):
     except Exception as e:
         print(f"[API] 결과 조회 실패 (id={result_id}): {e}")
         return jsonify({"error": f"DB 조회 실패: {str(e)}"}), 500
+
+
+# ========== J4 공유 링크 ==========
+
+@app.route('/results/<int:result_id>/share', methods=['POST'])
+def create_share_link(result_id):
+    """[J4] 본인 분석 결과를 누구나 볼 수 있는 read-only 공유 링크로 변환.
+
+    토큰은 1회 발급 후 유지 (재호출 시 동일 토큰 반환).
+    Returns: {"share_token": "abc123...", "url": "/share/abc123..."}
+    """
+    user_id = auth_user(request)
+    if not user_id:
+        return jsonify({"error": "로그인이 필요합니다 (본인 결과만 공유 가능)"}), 401
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id, share_token FROM analysis_results WHERE id = ?",
+            (result_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "분석 결과를 찾을 수 없습니다"}), 404
+        if row[0] != user_id:
+            conn.close()
+            return jsonify({"error": "본인이 분석한 결과만 공유 가능합니다"}), 403
+        existing_token = row[1]
+        if existing_token:
+            conn.close()
+            return jsonify({"share_token": existing_token})
+        # 새 토큰 발급
+        token = secrets.token_urlsafe(16)  # 22자 URL-safe
+        cursor.execute(
+            "UPDATE analysis_results SET share_token = ? WHERE id = ?",
+            (token, result_id)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"share_token": token})
+    except Exception as e:
+        return jsonify({"error": f"공유 링크 발급 실패: {str(e)}"}), 500
+
+
+@app.route('/results/<int:result_id>/unshare', methods=['POST'])
+def revoke_share_link(result_id):
+    """공유 링크 무효화 (본인 결과만)."""
+    user_id = auth_user(request)
+    if not user_id:
+        return jsonify({"error": "로그인이 필요합니다"}), 401
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id FROM analysis_results WHERE id = ?", (result_id,)
+        )
+        row = cursor.fetchone()
+        if not row or row[0] != user_id:
+            conn.close()
+            return jsonify({"error": "본인 결과만 변경 가능"}), 403
+        cursor.execute(
+            "UPDATE analysis_results SET share_token = NULL WHERE id = ?",
+            (result_id,)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"message": "공유 링크가 무효화되었습니다"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/share/<share_token>', methods=['GET'])
+def get_shared_result(share_token):
+    """공유 토큰으로 분석 결과 조회 (인증 불필요, read-only).
+
+    [공개 정보] 점수, 등급, 분석 근거 — 학회 발표 시연 가능
+    [비공개 정보] user_id, body 일부 — 보안 위해 마스킹
+    """
+    if not share_token or len(share_token) < 16:
+        return jsonify({"error": "유효하지 않은 공유 링크"}), 400
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM analysis_results WHERE share_token = ?", (share_token,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"error": "공유된 분석 결과를 찾을 수 없습니다"}), 404
+        result = dict(row)
+        # 보안: user_id는 노출 안 함
+        result.pop('user_id', None)
+        result.pop('user_label', None)
+        # body는 첫 200자만 노출 (이미 본문 일부 저장이지만 추가 안전장치)
+        if result.get('body'):
+            result['body'] = result['body'][:200]
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"조회 실패: {str(e)}"}), 500
 
 
 if __name__ == "__main__":

@@ -1140,23 +1140,28 @@ def save_to_db(result):
 
 # ========== 메인: 큐에서 기사 꺼내서 분석 ==========
 
-def is_already_analyzed(url):
-    """해당 URL이 이미 성공적으로 분석되었는지 DB에서 확인한다.
-    같은 기사를 중복 분석하면 DB에 동일한 결과가 쌓이고,
-    Worker 리소스(크롤링 + AI 모델 추론)가 낭비되므로 사전에 체크한다.
+def is_already_analyzed(url, user_id=None):
+    """해당 URL이 이미 본인의 분석 결과로 저장되었는지 확인한다 (Phase G 격리).
 
-    status='done'인 결과만 중복으로 간주한다.
-    status='failed'인 경우는 재시도할 수 있도록 중복 처리하지 않는다.
+    [중요] user_id별로 격리: 다른 사용자가 같은 URL을 분석했어도 본인은 새로 분석.
+    이렇게 하지 않으면 본인 분석 이력이 비어있는데도 "이미 분석됨"으로 skip되어
+    본인 분석 페이지에서 결과를 볼 수 없게 된다.
 
-    Returns: True면 이미 분석 완료됨 → skip, False면 신규 또는 이전 실패 → 분석 진행
+    status='done'인 본인 결과만 중복으로 간주.
     """
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM analysis_results WHERE url = ? AND status = 'done'",
-            (url,)
-        )
+        if user_id is None:
+            cursor.execute(
+                "SELECT COUNT(*) FROM analysis_results WHERE url = ? AND status = 'done' AND user_id IS NULL",
+                (url,)
+            )
+        else:
+            cursor.execute(
+                "SELECT COUNT(*) FROM analysis_results WHERE url = ? AND status = 'done' AND user_id = ?",
+                (url, user_id)
+            )
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
@@ -1271,8 +1276,9 @@ def process_message(ch, method, properties, body):
     # job 상태를 processing으로 갱신
     update_job_status(job_id, 'processing')
 
-    # ── 중복 분석 방지: 이미 분석 완료(done)된 URL이면 건너뛰기 ──
-    if is_already_analyzed(url):
+    # ── 중복 분석 방지: 본인이 이미 분석 완료(done)한 URL이면 건너뛰기 ──
+    # Phase G 격리: 다른 사용자가 분석한 동일 URL은 본인 입장에서 새로 분석해야 함
+    if is_already_analyzed(url, user_id=user_id):
         print(f"{WORKER_TAG} 이미 분석된 기사입니다 (skip): {url}")
         update_job_status(job_id, 'done')
         ch.basic_ack(delivery_tag=method.delivery_tag)

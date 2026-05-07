@@ -13,6 +13,76 @@ API_URL = "http://api:5000"
 
 st.set_page_config(page_title="뉴스 신뢰도 분석", page_icon="📰", layout="wide")
 
+# ========== J9 PWA 주입 (모바일 앱처럼 "홈 화면에 추가" 가능) ==========
+# Streamlit은 head 직접 수정이 어려우므로 components.html로 manifest + theme-color 주입.
+# 효과:
+# - Android Chrome: "앱 설치" 프롬프트 표시
+# - iOS Safari: "홈 화면에 추가" 시 standalone 모드로 실행
+# - 발표 멘트: "모바일에서도 앱처럼 설치해서 사용할 수 있습니다"
+import streamlit.components.v1 as components
+_PWA_MANIFEST_INLINE = json.dumps({
+    "name": "SSAK3 뉴스 신뢰도 분석",
+    "short_name": "SSAK3",
+    "description": "AI 기반 가짜뉴스 신뢰도 분석 서비스",
+    "start_url": "./",
+    "scope": "./",
+    "display": "standalone",
+    "orientation": "portrait",
+    "background_color": "#0F1B2D",
+    "theme_color": "#0D9488",
+    "lang": "ko",
+    "icons": [{
+        "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj48cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9IjgwIiBmaWxsPSIjMEYxQjJEIi8+PHRleHQgeD0iMjU2IiB5PSIzMjAiIGZvbnQtc2l6ZT0iMjAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjMEQ5NDg4Ij7wn5OwPC90ZXh0Pjwvc3ZnPg==",
+        "sizes": "512x512",
+        "type": "image/svg+xml",
+        "purpose": "any maskable"
+    }]
+})
+components.html(
+    f"""
+<script>
+(function () {{
+  try {{
+    const top = window.parent && window.parent.document ? window.parent.document : document;
+    const head = top.head || top.getElementsByTagName('head')[0];
+    if (!head) return;
+    // manifest (data URL — 외부 파일 의존 X)
+    if (!top.querySelector('link[rel="manifest"]')) {{
+      const m = document.createElement('link');
+      m.rel = 'manifest';
+      m.href = 'data:application/json;base64,' + btoa(unescape(encodeURIComponent({json.dumps(_PWA_MANIFEST_INLINE)})));
+      head.appendChild(m);
+    }}
+    // theme-color
+    if (!top.querySelector('meta[name="theme-color"]')) {{
+      const tc = document.createElement('meta');
+      tc.name = 'theme-color';
+      tc.content = '#0D9488';
+      head.appendChild(tc);
+    }}
+    // iOS PWA — apple-mobile-web-app-capable
+    if (!top.querySelector('meta[name="apple-mobile-web-app-capable"]')) {{
+      const a = document.createElement('meta');
+      a.name = 'apple-mobile-web-app-capable';
+      a.content = 'yes';
+      head.appendChild(a);
+    }}
+    if (!top.querySelector('meta[name="apple-mobile-web-app-title"]')) {{
+      const at = document.createElement('meta');
+      at.name = 'apple-mobile-web-app-title';
+      at.content = 'SSAK3';
+      head.appendChild(at);
+    }}
+    // viewport (모바일 가독성)
+    let vp = top.querySelector('meta[name="viewport"]');
+    if (vp) vp.setAttribute('content', 'width=device-width, initial-scale=1, viewport-fit=cover');
+  }} catch (e) {{ console.warn('PWA inject failed:', e); }}
+}})();
+</script>
+""",
+    height=0,
+)
+
 
 # ========== Phase G — 인증 헬퍼 ==========
 
@@ -118,6 +188,55 @@ def render_login_gate():
         if st.button("비회원 모드로 진입", use_container_width=True):
             st.session_state["guest_mode"] = True
             st.rerun()
+
+
+# ========== J4 공유 링크 페이지 (게이트 우회 — 누구나 접근 가능) ==========
+# URL이 ?share=<토큰>이면 인증 없이 read-only 결과 카드 1건만 표시.
+_qp = st.query_params if hasattr(st, "query_params") else st.experimental_get_query_params()
+_share_token = _qp.get("share") if isinstance(_qp, dict) else None
+if isinstance(_share_token, list):
+    _share_token = _share_token[0] if _share_token else None
+
+if _share_token:
+    st.markdown("""<div style="background: linear-gradient(135deg, #0F1B2D 0%, #1E3A5F 100%); padding: 32px 48px; border-radius: 20px; margin-bottom: 24px;">
+<h1 style="color: #FFFFFF; margin: 0; font-size: 28px;">📰 SSAK3 공유 분석 결과</h1>
+<p style="color: #94A3B8; margin: 8px 0 0 0; font-size: 14px;">공유된 read-only 분석 결과입니다. 본인이 분석을 시도하려면 메인 페이지로 이동하세요.</p>
+</div>""", unsafe_allow_html=True)
+    try:
+        _r = requests.get(f"{API_URL}/share/{_share_token}", timeout=10)
+        if _r.status_code != 200:
+            st.error(f"❌ 공유 결과를 불러올 수 없습니다: {_r.json().get('error', '오류')}")
+            if st.button("메인 페이지로"):
+                st.query_params.clear() if hasattr(st, "query_params") else None
+                st.rerun()
+            st.stop()
+        _shared = _r.json()
+        # 핵심 정보 카드
+        _grade_color = {"신뢰 가능": "#10B981", "주의 필요": "#F59E0B", "의심 기사": "#EF4444", "신뢰 낮음": "#6B7280"}.get(_shared.get("grade","-"), "#94A3B8")
+        st.markdown(f"""<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:16px;padding:32px;box-shadow:0 2px 12px rgba(0,0,0,0.06);">
+<h2 style="margin:0 0 8px 0;color:#1E293B;">{_shared.get('title','-')}</h2>
+<p style="font-size:13px;color:#94A3B8;margin:0 0 24px 0;">{_shared.get('url','')}<br>분석: {_shared.get('analyzed_at','-')}</p>
+<div style="display:flex;align-items:center;gap:24px;margin-bottom:24px;">
+<div style="font-size:64px;font-weight:800;color:{_grade_color};">{_shared.get('total_score',0):.1f}<span style="font-size:24px;color:#94A3B8;">/100</span></div>
+<div><span style="display:inline-block;padding:6px 18px;border-radius:20px;background:{_grade_color};color:white;font-weight:700;">{_shared.get('grade','-')}</span></div>
+</div>
+<table style="width:100%;border-collapse:collapse;font-size:14px;">
+<tr><td style="padding:8px 0;color:#64748B;">본문 일치도 (45%)</td><td style="padding:8px 0;text-align:right;font-weight:600;">{_shared.get('content_score',0):.1f}점</td></tr>
+<tr><td style="padding:8px 0;color:#64748B;border-top:1px solid #F1F5F9;">자극성 분석 (35%)</td><td style="padding:8px 0;text-align:right;font-weight:600;border-top:1px solid #F1F5F9;">{_shared.get('provocative_score',0):.1f}점</td></tr>
+<tr><td style="padding:8px 0;color:#64748B;border-top:1px solid #F1F5F9;">출처 신뢰도 (20%)</td><td style="padding:8px 0;text-align:right;font-weight:600;border-top:1px solid #F1F5F9;">{_shared.get('source_score',0):.1f}점</td></tr>
+</table>
+<p style="font-size:12px;color:#94A3B8;margin-top:16px;">출처: {_shared.get('source_name','-')}</p>
+</div>""", unsafe_allow_html=True)
+        st.markdown("---")
+        if st.button("📊 본인 분석을 시작하려면 메인 페이지로"):
+            try:
+                st.query_params.clear()
+            except Exception:
+                pass
+            st.rerun()
+    except Exception as e:
+        st.error(f"❌ API 연결 실패: {e}")
+    st.stop()
 
 
 # ── 인증 게이트 — 로그인/비회원모드 둘 다 아니면 게이트만 표시 ──
@@ -684,6 +803,56 @@ if page_mode == "📈 내 통계":
         st.bar_chart(_top)
     else:
         st.write("(데이터 부족)")
+
+    st.markdown("---")
+
+    # J4 공유 링크 발급/철회
+    st.markdown("### 🔗 분석 결과 공유 링크")
+    st.caption("본인 분석 결과를 누구나 볼 수 있는 read-only 링크로 변환할 수 있습니다 (점수/등급/출처만 노출, 본인 정보는 비공개).")
+    _share_df = _df.head(20).copy()
+    if not _share_df.empty:
+        _share_options = {
+            f"#{int(r['id'])} {str(r.get('title',''))[:50]} ({r.get('total_score',0):.1f}점)": int(r['id'])
+            for _, r in _share_df.iterrows()
+        }
+        _selected_label = st.selectbox(
+            "공유할 분석 결과 선택 (최근 20건)",
+            options=list(_share_options.keys()),
+        )
+        _selected_id = _share_options[_selected_label]
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            if st.button("🔗 공유 링크 발급", use_container_width=True):
+                try:
+                    _r = requests.post(
+                        f"{API_URL}/results/{_selected_id}/share",
+                        headers=auth_headers(), timeout=10
+                    )
+                    if _r.status_code == 200:
+                        _t = _r.json().get("share_token")
+                        # 학회 시연 시 사용 — 호스트 IP는 사용자가 직접 변경
+                        # 기본은 현재 페이지 base url 추정 (브라우저 측에서 처리해야 정확)
+                        _public = f"?share={_t}"
+                        st.success("✅ 공유 링크 발급 완료")
+                        st.code(_public, language=None)
+                        st.caption("브라우저에서 현재 도메인 + 위 ?share=...을 붙여 접속하면 됩니다. 예: http://localhost:8501/?share=...")
+                    else:
+                        st.error(f"❌ {_r.json().get('error','실패')}")
+                except Exception as _e:
+                    st.error(f"❌ {_e}")
+        with _c2:
+            if st.button("🔒 공유 무효화", use_container_width=True):
+                try:
+                    _r = requests.post(
+                        f"{API_URL}/results/{_selected_id}/unshare",
+                        headers=auth_headers(), timeout=10
+                    )
+                    if _r.status_code == 200:
+                        st.success("✅ 공유가 비활성화되었습니다")
+                    else:
+                        st.error(f"❌ {_r.json().get('error','실패')}")
+                except Exception as _e:
+                    st.error(f"❌ {_e}")
 
     st.markdown("---")
 

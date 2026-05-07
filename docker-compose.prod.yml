@@ -1,0 +1,96 @@
+# ========== 운영 배포용 Compose ==========
+# CI/CD로 GHCR에 푸시된 이미지를 그대로 pull해서 가동.
+# 빌드 시간 없이 즉시 배포 가능.
+#
+# 사용법:
+#   1) GHCR_OWNER 환경변수 설정 (GitHub username, 예: export GHCR_OWNER=myongho02)
+#   2) docker compose -f docker-compose.prod.yml pull
+#   3) docker compose -f docker-compose.prod.yml up -d
+#
+# 학회 발표 멘트: "이미 GHCR에 빌드된 이미지를 그대로 pull해서 1줄로 배포합니다"
+
+services:
+  rabbitmq:
+    image: rabbitmq:management
+    ports:
+      - "127.0.0.1:15672:15672"
+    expose:
+      - "5672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-guest}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ghcr.io/${GHCR_OWNER:?GHCR_OWNER 환경변수가 필요합니다}/ssak3-api:${TAG:-latest}
+    ports:
+      - "5001:5000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - shared-data:/app/data
+    environment:
+      - SSAK3_DB_PATH=/app/data/results.db
+      - SSAK3_SESSION_TTL=${SSAK3_SESSION_TTL:-604800}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/').read()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  worker-1:
+    image: ghcr.io/${GHCR_OWNER}/ssak3-worker:${TAG:-latest}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - shared-data:/app/data
+    environment:
+      - WORKER_ID=1
+    restart: unless-stopped
+
+  worker-2:
+    image: ghcr.io/${GHCR_OWNER}/ssak3-worker:${TAG:-latest}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - shared-data:/app/data
+    environment:
+      - WORKER_ID=2
+    restart: unless-stopped
+
+  worker-3:
+    image: ghcr.io/${GHCR_OWNER}/ssak3-worker:${TAG:-latest}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - shared-data:/app/data
+    environment:
+      - WORKER_ID=3
+    restart: unless-stopped
+
+  dashboard:
+    image: ghcr.io/${GHCR_OWNER}/ssak3-dashboard:${TAG:-latest}
+    ports:
+      - "8501:8501"
+    volumes:
+      - shared-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8501/_stcore/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  shared-data:
