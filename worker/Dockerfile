@@ -2,9 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# ── 이미지 크기 최적화 (운영 배포용) ──
+# 기본 `pip install torch`는 CUDA 라이브러리 포함 ~2.5GB.
+# Worker는 GPU 추론 안 함(CPU만) → CPU 전용 PyTorch 휠로 교체 → ~200MB.
+# --no-cache-dir로 pip 캐시 제외 → layer 추가 절감.
+# 결과: 이미지 ~14GB → ~1.5GB (팀원 다운로드 시간 30분 → 3분)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 # requests, beautifulsoup4: 네이버 뉴스 본문 직접 파싱용
-# transformers, torch: HuggingFace KR-FinBert-SC 감성분석 모델 실행용
-RUN pip install pika newspaper3k lxml_html_clean scikit-learn numpy requests beautifulsoup4 transformers torch
+# transformers: HuggingFace KR-FinBert-SC 감성분석 모델 실행용
+RUN pip install --no-cache-dir pika newspaper3k lxml_html_clean scikit-learn numpy requests beautifulsoup4 transformers
 
 # ── 모델 사전 다운로드 (옵션) ──
 # 로컬 개발: 시연 안정성 위해 빌드 시 미리 다운로드 (~315MB, 빌드 시간 +2~3분)
