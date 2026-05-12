@@ -1,11 +1,15 @@
 from flask import Flask, request, jsonify
 from collections import deque, defaultdict
+from urllib.parse import urlparse
 import pika
 import json
 import sqlite3
 import time
 import os
 import secrets
+import ipaddress
+import socket
+import hashlib
 import bcrypt
 
 app = Flask(__name__)
@@ -201,6 +205,26 @@ def init_db():
         cursor.execute("ALTER TABLE analysis_results ADD COLUMN share_token TEXT")
     except sqlite3.OperationalError:
         pass
+    # [P2-3] share_token에 unique partial index — 충돌 방지 + 조회 성능
+    try:
+        cursor.execute('''
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_share_token_unique
+            ON analysis_results(share_token)
+            WHERE share_token IS NOT NULL
+        ''')
+    except sqlite3.OperationalError:
+        pass
+    # 세션 만료 정리 성능 인덱스
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
+    except sqlite3.OperationalError:
+        pass
+    # [P2-2 마이그레이션] 토큰 해시 저장으로 전환 — 기존 평문 토큰 세션 일괄 무효화
+    # 64자(=SHA-256 hex)가 아닌 토큰은 평문이므로 안전을 위해 삭제 (한 번만 실행됨)
+    try:
+        cursor.execute("DELETE FROM sessions WHERE length(token) != 64")
+    except sqlite3.OperationalError:
+        pass
 
     # ── M1 사용자 피드백 (분석 정확도 신고/평가) ──
     # 팀원/사용자가 분석 결과 카드에서 👍/👎 + 카테고리 + 코멘트 제출
@@ -246,21 +270,31 @@ def verify_password(password, password_hash):
         return False
 
 
+def _hash_token(token):
+    """[P2-2] 세션 토큰 해시 저장 — DB 노출 시 토큰 탈취 방지.
+    원본 토큰은 클라이언트에 1회만 전달되며 DB에는 SHA-256 해시만 저장.
+    검증 시 입력 토큰을 해시해서 DB의 해시와 비교.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def create_session(user_id):
-    """새 세션 토큰을 발급하고 DB에 저장한다."""
+    """새 세션 토큰을 발급하고 DB에 해시로 저장한다 (P2-2)."""
     token = secrets.token_hex(32)
+    token_hash = _hash_token(token)
     now = int(time.time())
     expires = now + SESSION_TTL_SECONDS
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
+        # 'token' 컬럼에는 hash 저장 (스키마는 그대로 두고 의미만 변경)
         cursor.execute(
             "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-            (token, user_id, time.strftime("%Y-%m-%d %H:%M:%S"), expires)
+            (token_hash, user_id, time.strftime("%Y-%m-%d %H:%M:%S"), expires)
         )
         conn.commit()
         conn.close()
-        return token
+        return token  # ← 원본 토큰을 1회 반환 (DB에는 해시만 남음)
     except Exception as e:
         print(f"[API] 세션 생성 실패: {e}")
         return None
@@ -268,6 +302,7 @@ def create_session(user_id):
 
 def get_user_from_token(token):
     """Authorization 헤더의 토큰으로 user_id를 조회한다.
+    [P2-2] 입력 토큰을 해시한 뒤 DB의 해시와 매칭.
     만료된 세션은 자동 정리(삭제)하고 None 반환.
     """
     if not token:
@@ -279,8 +314,9 @@ def get_user_from_token(token):
         now = int(time.time())
         cursor.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
         conn.commit()
-        # 토큰으로 user_id 조회
-        cursor.execute("SELECT user_id FROM sessions WHERE token = ?", (token,))
+        # 토큰 → 해시 변환 후 매칭
+        token_hash = _hash_token(token)
+        cursor.execute("SELECT user_id FROM sessions WHERE token = ?", (token_hash,))
         row = cursor.fetchone()
         conn.close()
         return row[0] if row else None
@@ -384,18 +420,84 @@ def auth_login():
 
 @app.route('/auth/logout', methods=['POST'])
 def auth_logout():
-    """로그아웃 — 세션 토큰 무효화."""
+    """로그아웃 — 세션 토큰 무효화 ([P2-2] 해시 매칭)."""
     token = request.headers.get('Authorization', '').replace('Bearer ', '').strip()
     if not token:
         return jsonify({"message": "이미 비회원 상태"}), 200
     try:
+        token_hash = _hash_token(token)
         conn = sqlite3.connect(DB_PATH, timeout=10)
-        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token_hash,))
         conn.commit()
         conn.close()
     except Exception:
         pass
     return jsonify({"message": "로그아웃 완료"})
+
+
+# ========== P1-2 URL 검증 + SSRF 방어 ==========
+
+MAX_URL_LEN = 2048              # URL 한 개 최대 길이
+MAX_BULK_URLS = 100             # 한 번에 분석 요청 가능한 URL 최대 개수
+
+# 신뢰할 도메인 화이트리스트 (운영 시점에는 더 엄격하게 — 학회 발표용으론 네이버 위주)
+# 비어 있으면 (공개 IP면) 모두 허용. 운영 환경에서는 명시적 화이트리스트 권장.
+ALLOWED_DOMAIN_SUFFIXES = (
+    "naver.com", "yna.co.kr", "kbs.co.kr", "mbc.co.kr", "sbs.co.kr",
+    "chosun.com", "joongang.co.kr", "donga.com", "hani.co.kr",
+    "khan.co.kr", "hankyung.com", "mk.co.kr", "mt.co.kr", "sedaily.com",
+    "edaily.co.kr", "ohmynews.com", "newsis.com", "news1.kr",
+    "ytn.co.kr", "jtbc.co.kr", "tvchosun.com", "channela.com",
+    "heraldcorp.com", "etnews.com", "zdnet.co.kr", "blog.naver.com",
+)
+
+
+def is_safe_public_url(url):
+    """[P1-2] SSRF 방어 — URL이 안전한 외부 공개 자원인지 검증.
+
+    검증 항목:
+    1. 길이 제한 (≤ MAX_URL_LEN)
+    2. scheme = http/https 만 허용
+    3. hostname이 있어야 함
+    4. DNS 해석된 IP가 사설/loopback/link-local/multicast가 아니어야 함
+    5. (옵션) 허용 도메인 화이트리스트 검증
+
+    Returns:
+        (ok: bool, error_message: str | None)
+    """
+    if not isinstance(url, str):
+        return False, "URL은 문자열이어야 합니다"
+    if len(url) > MAX_URL_LEN:
+        return False, f"URL이 너무 깁니다 (최대 {MAX_URL_LEN}자)"
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, "URL 파싱 실패"
+    if parsed.scheme not in ("http", "https"):
+        return False, "http 또는 https URL만 허용됩니다"
+    if not parsed.hostname:
+        return False, "URL에 호스트가 없습니다"
+
+    # 호스트 → IP 해석 후 사설망 차단
+    try:
+        ip_str = socket.gethostbyname(parsed.hostname)
+        ip = ipaddress.ip_address(ip_str)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            return False, "내부망/예약 IP 주소는 분석할 수 없습니다"
+    except (socket.gaierror, ValueError):
+        return False, "URL의 호스트를 해석할 수 없습니다"
+
+    # 화이트리스트 (선택적 적용)
+    if ALLOWED_DOMAIN_SUFFIXES:
+        hostname_lower = parsed.hostname.lower()
+        if not any(hostname_lower == d or hostname_lower.endswith("." + d)
+                   for d in ALLOWED_DOMAIN_SUFFIXES):
+            return False, (
+                f"지원되지 않는 도메인입니다. "
+                f"현재는 네이버 뉴스 및 주요 한국 언론사 도메인만 지원합니다."
+            )
+
+    return True, None
 
 
 def is_password_strong(password):
@@ -484,7 +586,16 @@ def auth_delete_account():
             conn.close()
             return jsonify({"error": "비밀번호가 올바르지 않습니다"}), 401
         username = row[0]
-        # CASCADE 삭제: 본인 분석 결과 / jobs / 세션 / 사용자 본체
+        # [P1-1] CASCADE 삭제 — 본인 데이터 전체 영구 제거 (GDPR 수준)
+        # 순서: 본인이 남긴 피드백 → 본인 결과에 달린 모든 피드백 → 결과 → jobs → 세션 → 사용자
+        cursor.execute("DELETE FROM feedback WHERE user_id = ?", (user_id,))
+        deleted_feedback_mine = cursor.rowcount
+        cursor.execute(
+            "DELETE FROM feedback WHERE result_id IN "
+            "(SELECT id FROM analysis_results WHERE user_id = ?)",
+            (user_id,)
+        )
+        deleted_feedback_on_mine = cursor.rowcount
         cursor.execute("DELETE FROM analysis_results WHERE user_id = ?", (user_id,))
         deleted_results = cursor.rowcount
         cursor.execute("DELETE FROM jobs WHERE user_id = ?", (user_id,))
@@ -494,7 +605,11 @@ def auth_delete_account():
         conn.commit()
         conn.close()
         return jsonify({
-            "message": f"회원 '{username}' 탈퇴 완료. 분석 결과 {deleted_results}건과 작업 {deleted_jobs}건이 영구 삭제되었습니다.",
+            "message": (
+                f"회원 '{username}' 탈퇴 완료. "
+                f"분석 결과 {deleted_results}건, 작업 {deleted_jobs}건, "
+                f"피드백 {deleted_feedback_mine + deleted_feedback_on_mine}건이 영구 삭제되었습니다."
+            ),
         })
     except Exception as e:
         return jsonify({"error": f"탈퇴 실패: {str(e)}"}), 500
@@ -659,6 +774,10 @@ def analyze():
         return jsonify({"error": "URL을 입력해주세요"}), 400
 
     url = data['url']
+    # [P1-2] URL 검증 — SSRF 차단 + 길이 + 도메인 화이트리스트
+    url_ok, url_err = is_safe_public_url(url)
+    if not url_ok:
+        return jsonify({"error": url_err}), 400
     user_label = data.get('user_label', '') or ''
     # Phase G: 인증된 사용자 식별
     user_id = auth_user(request)
@@ -728,6 +847,11 @@ def analyze_bulk():
     user_id = auth_user(request)  # Phase G: 인증된 회원 식별
     if not isinstance(urls, list) or len(urls) == 0:
         return jsonify({"error": "urls는 비어있지 않은 배열이어야 합니다"}), 400
+    # [P1-2] bulk 개수 제한 — 자원 보호
+    if len(urls) > MAX_BULK_URLS:
+        return jsonify({
+            "error": f"한 번에 최대 {MAX_BULK_URLS}개 URL만 요청할 수 있습니다 (요청: {len(urls)}개)"
+        }), 400
 
     queued_count = 0
     skipped_count = 0
@@ -765,8 +889,13 @@ def analyze_bulk():
     channel.queue_declare(queue='news_queue', durable=True)
 
     for url in urls:
+        if not isinstance(url, str):
+            continue
         url = url.strip()
-        if not url or not url.startswith("http"):
+        # [P1-2] 각 URL도 SSRF 검증 — 안전하지 않으면 skip (전체 실패시키지 않음)
+        url_ok, _ = is_safe_public_url(url)
+        if not url_ok:
+            skipped_count += 1
             continue
 
         # done이거나 이미 큐에 있으면 skip
@@ -953,6 +1082,13 @@ def submit_feedback(result_id):
         if not row:
             conn.close()
             return jsonify({"error": "분석 결과를 찾을 수 없습니다"}), 404
+        # [P0-3 보안] 결과 소유권 검증: 본인 결과 또는 공개 공유된 결과만 평가 허용
+        result_owner_id, share_token = row[0], row[1]
+        if result_owner_id != user_id and not share_token:
+            conn.close()
+            return jsonify({
+                "error": "본인 분석 결과 또는 공유된 결과에만 피드백을 남길 수 있습니다"
+            }), 403
         # UPSERT (SQLite ON CONFLICT)
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute('''
@@ -1006,6 +1142,8 @@ def get_all_feedback():
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         if user_id:
+            # [P0-3 보안] 본인이 남긴 피드백 중 본인 결과 또는 공유된 결과에 대한 것만 노출
+            # 다른 사용자 결과 정보가 조인을 통해 노출되지 않도록 WHERE에 추가 조건
             cursor.execute('''
                 SELECT f.id, f.result_id, f.rating, f.category, f.comment, f.created_at,
                        r.url, r.title, r.total_score, r.grade,
@@ -1014,8 +1152,9 @@ def get_all_feedback():
                 FROM feedback f
                 JOIN analysis_results r ON f.result_id = r.id
                 WHERE f.user_id = ?
+                  AND (r.user_id = ? OR r.share_token IS NOT NULL)
                 ORDER BY f.created_at DESC
-            ''', (user_id,))
+            ''', (user_id, user_id))
         else:
             cursor.execute("SELECT * FROM feedback WHERE 1=0")  # 비회원은 빈 결과
         rows = [dict(r) for r in cursor.fetchall()]
@@ -1161,4 +1300,7 @@ def get_shared_result(share_token):
 
 if __name__ == "__main__":
     init_db()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # [P2-1] 운영 기본은 debug=False. 개발 시에만 FLASK_DEBUG=1 환경변수로 활성화.
+    # 운영 환경에서는 gunicorn 사용 권장: gunicorn -w 2 -b 0.0.0.0:5000 api_server:app
+    debug_mode = os.environ.get("FLASK_DEBUG", "0") in ("1", "true", "True")
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)

@@ -195,23 +195,30 @@ worker-1  | [Worker] 대기 중... 큐에서 기사를 기다리고 있습니다
 
 ## 6. Worker 스케일링
 
-Worker를 늘리면 여러 기사를 동시에 분석할 수 있습니다.
+본 시스템은 `docker-compose.yml`에 **`worker-1`, `worker-2`, `worker-3`** 세 개의 Worker 서비스가 명시적으로 정의되어 있습니다 (`--scale worker=N` 미지원). Worker 수는 시작할 때 지정하거나 일부만 켜는 방식으로 조정합니다.
 
 ```bash
-# Worker 3개로 실행
-docker compose up --build --scale worker=3
+# Worker 1개만 실행
+docker compose up --build rabbitmq api dashboard worker-1
 
-# 백그라운드(detached) 모드로 Worker 3개 실행
-docker compose up --scale worker=3 -d
+# Worker 3개 모두 실행 (기본 권장)
+docker compose up --build -d
 
-# Worker 5개로 실행
-docker compose up --build --scale worker=5
+# 백그라운드 모드 + 일부만
+docker compose up -d rabbitmq api dashboard worker-1 worker-2
+
+# 이미 실행 중일 때 Worker 끄기/켜기
+docker compose stop worker-3
+docker compose start worker-3
 ```
 
-| Worker 수 | 동작 방식 | 예상 효과 |
-|-----------|----------|----------|
-| 1개 (기본) | 기사를 1개씩 순서대로 분석 | 기사당 약 5~10초 |
-| 3개 | 3개의 기사를 동시에 분석 | 처리 속도 약 3배 향상 |
+**Worker를 더 늘리고 싶다면** `docker-compose.yml`에 `worker-4`, `worker-5`를 추가하세요 (worker-1~3 블록 복사 + WORKER_ID 변경).
+
+| Worker 수 | 동작 방식 | 실측 (20건 처리) |
+|-----------|----------|------------------|
+| 1개 | 기사를 1개씩 순서대로 분석 | 12.2초 |
+| 2개 | 2개의 기사를 동시에 분석 | 10.2초 (17%↓) |
+| 3개 (기본) | 3개의 기사를 동시에 분석 | 10.1초 (캐시 효과 누적) |
 | 5개 | 5개의 기사를 동시에 분석 | 처리 속도 약 5배 향상 |
 
 > **주의:** Worker 1개당 약 1~2GB RAM 사용 (AI 모델 메모리).  

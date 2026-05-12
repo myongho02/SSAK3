@@ -7,11 +7,14 @@
 
 동작 흐름:
     1. 네이버 뉴스 최신 기사 URL 20개 수집
-    2. Worker 1/3/5개 각각에 대해:
-       - DB 초기화 (이전 데이터 삭제)
+    2. WORKER_COUNTS에 정의된 각 Worker 수에 대해:
+       - DB + RabbitMQ 큐 초기화
        - Worker N개 시작 → 20개 URL 전송 → 전부 처리될 때까지 대기 → 시간 측정
        - Worker 정지
     3. 결과를 JSON 파일로 저장 (대시보드에서 읽어서 시각화)
+
+[P1-3 수정] docker-compose.yml에 정의된 worker-1/2/3에 맞춰 [1, 2, 3]으로 설정.
+WORKER_COUNTS에 4 이상 값을 넣으려면 docker-compose.yml에 worker-4, worker-5도 정의 필요.
 """
 
 import subprocess
@@ -21,14 +24,18 @@ import sys
 import os
 import sqlite3
 import requests
+from pathlib import Path
 from bs4 import BeautifulSoup
 
 # ========== 설정 ==========
+# [P1-3] 환경 독립적 경로 — 어떤 사용자/PC에서든 동작
+BASE_DIR = Path(__file__).resolve().parent
+
 API_URL = "http://localhost:5001"                 # 호스트에서 접근하는 API 주소
 DB_PATH = None                                     # Docker 볼륨 내 DB 경로 (아래에서 자동 탐색)
 RESULT_FILE = "benchmark_results.json"             # 결과 저장 파일
 NUM_ARTICLES = 20                                  # 테스트 기사 수
-WORKER_COUNTS = [1, 2, 3]                          # 테스트할 Worker 수 (docker-compose.yml에 정의된 worker-1/2/3에 맞춤)
+WORKER_COUNTS = [1, 2, 3]                          # 테스트할 Worker 수 (docker-compose.yml worker-1/2/3과 일치)
 POLL_INTERVAL = 2                                  # DB 폴링 간격 (초)
 TIMEOUT = 600                                      # 최대 대기 시간 (초)
 
@@ -259,8 +266,10 @@ def run_benchmark(urls, worker_count):
     queued = result.get("count", 0)
     print(f"  큐에 {queued}개 전송 완료")
 
-    # 5) 완료 대기 — 전송 시점부터 done >= len(urls)이 될 때까지의 경과 시간
-    _ = wait_for_completion(len(urls))
+    # 5) 완료 대기 — 전송 시점부터 큐에 들어간 만큼 처리될 때까지의 경과 시간
+    # [P1-3] queued 기반 — 중복/유효하지 않은 URL이 skip된 경우에도 정확한 측정
+    target = queued if queued > 0 else len(urls)
+    _ = wait_for_completion(target)
     total_time = time.time() - t_start
 
     # 6) Worker 정지
@@ -330,7 +339,8 @@ def main():
         "results": results
     }
 
-    output_path = os.path.join("/Users/pespam/SSAK3", RESULT_FILE)
+    # [P1-3] 환경 독립적 결과 저장 경로 (스크립트와 같은 디렉터리)
+    output_path = BASE_DIR / RESULT_FILE
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
     print(f"\n결과 저장: {output_path}")
@@ -338,9 +348,9 @@ def main():
     # Docker 볼륨에도 복사 (대시보드 컨테이너에서 접근용)
     subprocess.run(
         ["docker", "compose", "cp",
-         output_path, "dashboard:/app/data/benchmark_results.json"],
+         str(output_path), "dashboard:/app/data/benchmark_results.json"],
         capture_output=True, text=True,
-        cwd=os.path.dirname(os.path.abspath(__file__))
+        cwd=str(BASE_DIR)
     )
     print("대시보드 컨테이너에 결과 복사 완료")
     print("\n대시보드 사이드바에서 '성능 측정' 메뉴를 확인하세요.")

@@ -1,5 +1,6 @@
 flask
 pika
+bcrypt
 requests
 beautifulsoup4
 lxml_html_clean

@@ -5,6 +5,18 @@ import requests
 import os
 import json
 import time
+from html import escape as _html_escape
+
+
+def safe(value):
+    """[P0-4 XSS 방어] 외부 입력(제목/URL/출처 등)을 HTML에 삽입하기 전 이스케이프.
+
+    크롤링된 데이터에 <script>, <img onerror=...> 같은 위험 문자열이 있을 수 있으므로
+    unsafe_allow_html=True로 삽입되는 모든 외부 데이터는 이 함수를 거쳐야 한다.
+    """
+    if value is None:
+        return ""
+    return _html_escape(str(value), quote=True)
 
 # ========== 기본 설정 ==========
 DB_PATH = "/app/data/results.db"
@@ -167,7 +179,8 @@ def render_login_gate():
                     st.error(f"❌ {err}")
 
     with tab_register:
-        st.caption("아이디 3~30자, 비밀번호 6자 이상")
+        # [P1-4] 백엔드 검증 (영문+숫자 8자 이상)과 일치
+        st.caption("아이디 3~30자, 비밀번호 **8자 이상 + 영문·숫자 모두 포함** (예: Test1234)")
         with st.form("register_form"):
             u = st.text_input("새 아이디", key="reg_u")
             p = st.text_input("새 비밀번호", type="password", key="reg_p")
@@ -214,18 +227,18 @@ if _share_token:
         # 핵심 정보 카드
         _grade_color = {"신뢰 가능": "#10B981", "주의 필요": "#F59E0B", "의심 기사": "#EF4444", "신뢰 낮음": "#6B7280"}.get(_shared.get("grade","-"), "#94A3B8")
         st.markdown(f"""<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:16px;padding:32px;box-shadow:0 2px 12px rgba(0,0,0,0.06);">
-<h2 style="margin:0 0 8px 0;color:#1E293B;">{_shared.get('title','-')}</h2>
-<p style="font-size:13px;color:#94A3B8;margin:0 0 24px 0;">{_shared.get('url','')}<br>분석: {_shared.get('analyzed_at','-')}</p>
+<h2 style="margin:0 0 8px 0;color:#1E293B;">{safe(_shared.get('title','-'))}</h2>
+<p style="font-size:13px;color:#94A3B8;margin:0 0 24px 0;">{safe(_shared.get('url',''))}<br>분석: {safe(_shared.get('analyzed_at','-'))}</p>
 <div style="display:flex;align-items:center;gap:24px;margin-bottom:24px;">
 <div style="font-size:64px;font-weight:800;color:{_grade_color};">{_shared.get('total_score',0):.1f}<span style="font-size:24px;color:#94A3B8;">/100</span></div>
-<div><span style="display:inline-block;padding:6px 18px;border-radius:20px;background:{_grade_color};color:white;font-weight:700;">{_shared.get('grade','-')}</span></div>
+<div><span style="display:inline-block;padding:6px 18px;border-radius:20px;background:{_grade_color};color:white;font-weight:700;">{safe(_shared.get('grade','-'))}</span></div>
 </div>
 <table style="width:100%;border-collapse:collapse;font-size:14px;">
 <tr><td style="padding:8px 0;color:#64748B;">본문 일치도 (45%)</td><td style="padding:8px 0;text-align:right;font-weight:600;">{_shared.get('content_score',0):.1f}점</td></tr>
 <tr><td style="padding:8px 0;color:#64748B;border-top:1px solid #F1F5F9;">자극성 분석 (35%)</td><td style="padding:8px 0;text-align:right;font-weight:600;border-top:1px solid #F1F5F9;">{_shared.get('provocative_score',0):.1f}점</td></tr>
 <tr><td style="padding:8px 0;color:#64748B;border-top:1px solid #F1F5F9;">출처 신뢰도 (20%)</td><td style="padding:8px 0;text-align:right;font-weight:600;border-top:1px solid #F1F5F9;">{_shared.get('source_score',0):.1f}점</td></tr>
 </table>
-<p style="font-size:12px;color:#94A3B8;margin-top:16px;">출처: {_shared.get('source_name','-')}</p>
+<p style="font-size:12px;color:#94A3B8;margin-top:16px;">출처: {safe(_shared.get('source_name','-'))}</p>
 </div>""", unsafe_allow_html=True)
         st.markdown("---")
         if st.button("📊 본인 분석을 시작하려면 메인 페이지로"):
@@ -1501,13 +1514,15 @@ else:
         keyword_score_v = kw_data.get('keyword_score', None)
         kw_tags = ""
         for kw in all_kw:
+            # [P0-4 XSS] 제목에서 추출된 키워드도 외부 입력이므로 이스케이프
+            _safe_kw = safe(kw)
             if kw in matched_kw:
-                kw_tags += f'<span class="kw-tag matched">{kw} ✓</span>'
+                kw_tags += f'<span class="kw-tag matched">{_safe_kw} ✓</span>'
             elif kw in negated_kw:
                 # 부정어로 매칭 취소된 키워드는 노란색으로 표시
-                kw_tags += f'<span class="kw-tag" style="background:#FEF3C7;color:#92400E;">{kw} ⚠부정</span>'
+                kw_tags += f'<span class="kw-tag" style="background:#FEF3C7;color:#92400E;">{_safe_kw} ⚠부정</span>'
             else:
-                kw_tags += f'<span class="kw-tag missed">{kw} ✗</span>'
+                kw_tags += f'<span class="kw-tag missed">{_safe_kw} ✗</span>'
 
         # NLI 확률 시각화 (entailment/neutral/contradiction 막대)
         nli_html = ""
@@ -1555,9 +1570,9 @@ else:
             for w in words:
                 if w in USER_EXEMPT_WORDS:
                     # 사용자 면제 — 회색 + 취소선
-                    prov_tags += f'<span class="cat-label">{cat}</span><span class="prov-tag" style="background:#E2E8F0;color:#64748B;text-decoration:line-through;">{w} (면제)</span> '
+                    prov_tags += f'<span class="cat-label">{safe(cat)}</span><span class="prov-tag" style="background:#E2E8F0;color:#64748B;text-decoration:line-through;">{safe(w)} (면제)</span> '
                 else:
-                    prov_tags += f'<span class="cat-label">{cat}</span><span class="prov-tag">{w}</span> '
+                    prov_tags += f'<span class="cat-label">{safe(cat)}</span><span class="prov-tag">{safe(w)}</span> '
 
         # 사용자 추가 단어 — 본문/제목에 매칭되는지 직접 확인
         user_hit_tags = ""
@@ -1602,10 +1617,11 @@ else:
         src_name = src_parts[0] if len(src_parts) > 0 else ''
         src_class = src_parts[1] if len(src_parts) > 1 else ''
 
+        # [P0-4 XSS] 크롤링된 언론사명/분류도 이스케이프
         evidence3 = f"""<div class="evidence-section">
 <div class="evidence-title">🏢 출처 신뢰도 근거</div>
-<div class="evidence-row">원본 언론사: <b>{src_name if src_name else '확인 불가'}</b></div>
-<div class="evidence-row">분류: <b>{src_class if src_class else '미분류'}</b></div>
+<div class="evidence-row">원본 언론사: <b>{safe(src_name) if src_name else '확인 불가'}</b></div>
+<div class="evidence-row">분류: <b>{safe(src_class) if src_class else '미분류'}</b></div>
 <div class="evidence-row">최종 출처 점수: <b>{source_s:.1f}점</b></div>
 </div>"""
 
@@ -1616,12 +1632,18 @@ else:
         # Worker 라벨이 있으면 카드 메타 라인에 표시
         _card_worker_html = f'&nbsp;&nbsp;|&nbsp;&nbsp;<span style="background:#EFF6FF;color:#1E40AF;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:600;">{_card_worker_label} 처리</span>' if _card_worker_label else ""
 
+        # [P0-4 XSS 방어] HTML 삽입 전 외부 데이터 이스케이프
+        _safe_title = safe(row.get('title', ''))
+        _safe_url = safe(row.get('url', ''))
+        _safe_analyzed_at = safe(row.get('analyzed_at', ''))
+        _safe_grade = safe(grade)
+
         # ── 기사 카드 HTML 조립 — 왼쪽 정렬 필수 (Markdown 코드 블록 방지) ──
         card_html = f"""<div class="article-card">
 <div class="grade-bar" style="background: {color};"></div>
 <div class="card-body">
-<div class="card-title">{row['title']}</div>
-<div class="card-meta">{row['url']}&nbsp;&nbsp;|&nbsp;&nbsp;{row['analyzed_at']}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: {color};">{grade}</span>{_card_worker_html}</div>
+<div class="card-title">{_safe_title}</div>
+<div class="card-meta">{_safe_url}&nbsp;&nbsp;|&nbsp;&nbsp;{_safe_analyzed_at}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: {color};">{_safe_grade}</span>{_card_worker_html}</div>
 <div style="display: flex; gap: 32px; align-items: center; margin-top: 12px;">
 <div style="flex-shrink: 0; min-width: 130px;">
 {build_gauge_svg(score, grade, color)}</div>
@@ -1747,11 +1769,12 @@ if not failed_df.empty:
     for idx, row in failed_df.iterrows():
         col_card, col_btn = st.columns([6, 1])
         with col_card:
+            # [P0-4 XSS] 실패 카드도 외부 데이터 이스케이프
             st.markdown(f"""<div class="article-card failed">
 <div class="grade-bar" style="background: #9CA3AF;"></div>
 <div class="card-body">
-<div class="card-title" style="color: #94A3B8;">❌ {row['title']}</div>
-<div class="card-meta">{row['url']}&nbsp;&nbsp;|&nbsp;&nbsp;{row['analyzed_at']}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: #9CA3AF;">분석 실패</span></div>
+<div class="card-title" style="color: #94A3B8;">❌ {safe(row.get('title',''))}</div>
+<div class="card-meta">{safe(row.get('url',''))}&nbsp;&nbsp;|&nbsp;&nbsp;{safe(row.get('analyzed_at',''))}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: #9CA3AF;">분석 실패</span></div>
 <p style="color: #94A3B8; font-size: 14px; margin: 0;">크롤링에 실패하여 분석할 수 없습니다. URL을 확인해주세요.</p>
 </div></div>""", unsafe_allow_html=True)
         with col_btn:
