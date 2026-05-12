@@ -1,0 +1,49 @@
+{
+  "timestamp": "2026-05-06 10:23:00",
+  "num_articles": 20,
+  "urls": [
+    "https://n.news.naver.com/mnews/article/018/0006273621",
+    "https://n.news.naver.com/mnews/article/comment/018/0006273621",
+    "https://n.news.naver.com/mnews/article/comment/014/0005517275",
+    "https://n.news.naver.com/mnews/article/comment/055/0001353685",
+    "https://n.news.naver.com/mnews/article/comment/052/0002349213",
+    "https://n.news.naver.com/mnews/article/277/0005758466",
+    "https://n.news.naver.com/mnews/article/014/0005517275",
+    "https://n.news.naver.com/mnews/article/comment/025/0003521257",
+    "https://n.news.naver.com/mnews/article/052/0002349213",
+    "https://n.news.naver.com/mnews/article/025/0003521257",
+    "https://n.news.naver.com/mnews/article/comment/277/0005758466",
+    "https://n.news.naver.com/mnews/article/055/0001353685",
+    "https://n.news.naver.com/mnews/article/469/0000929131",
+    "https://n.news.naver.com/mnews/article/449/0000344081",
+    "https://n.news.naver.com/mnews/article/comment/277/0005758603",
+    "https://n.news.naver.com/mnews/article/277/0005758603",
+    "https://n.news.naver.com/mnews/article/comment/469/0000929131",
+    "https://n.news.naver.com/mnews/article/comment/020/0003717421",
+    "https://n.news.naver.com/mnews/article/comment/449/0000344081",
+    "https://n.news.naver.com/mnews/article/020/0003717421"
+  ],
+  "results": [
+    {
+      "workers": 1,
+      "total_time": 12.2,
+      "avg_time": 0.6,
+      "articles": 20,
+      "est_1000_min": 10.1
+    },
+    {
+      "workers": 2,
+      "total_time": 10.2,
+      "avg_time": 0.5,
+      "articles": 20,
+      "est_1000_min": 8.5
+    },
+    {
+      "workers": 3,
+      "total_time": 10.1,
+      "avg_time": 0.5,
+      "articles": 20,
+      "est_1000_min": 8.4
+    }
+  ]
+}
