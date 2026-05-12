@@ -1,0 +1,175 @@
+{
+  "total": 12,
+  "strict_accuracy": 0.6666666666666666,
+  "loose_accuracy": 1.0,
+  "results": [
+    {
+      "id": "N1",
+      "category": "normal",
+      "title": "정부, 내년 최저임금 시급 1만500원으로 결정",
+      "expected_grade": "신뢰 가능",
+      "actual_grade": "신뢰 가능",
+      "scores": {
+        "content": 78.1,
+        "provocative": 97.5,
+        "source": 85.0,
+        "total": 86.3
+      },
+      "dist": 0
+    },
+    {
+      "id": "N2",
+      "category": "normal",
+      "title": "한국은행, 기준금리 3.25%로 동결 결정",
+      "expected_grade": "신뢰 가능",
+      "actual_grade": "신뢰 가능",
+      "scores": {
+        "content": 81.5,
+        "provocative": 97.5,
+        "source": 85.0,
+        "total": 87.8
+      },
+      "dist": 0
+    },
+    {
+      "id": "N3",
+      "category": "normal",
+      "title": "기상청 \"이번 주 전국 흐리고 비, 주말은 맑음\"",
+      "expected_grade": "신뢰 가능",
+      "actual_grade": "신뢰 가능",
+      "scores": {
+        "content": 71.4,
+        "provocative": 97.5,
+        "source": 85.0,
+        "total": 83.3
+      },
+      "dist": 0
+    },
+    {
+      "id": "N4",
+      "category": "normal",
+      "title": "삼성전자, 3분기 매출 76조원 기록… 전년比 5% 증가",
+      "expected_grade": "신뢰 가능",
+      "actual_grade": "주의 필요",
+      "scores": {
+        "content": 80.0,
+        "provocative": 82.5,
+        "source": 65.0,
+        "total": 77.9
+      },
+      "dist": 1
+    },
+    {
+      "id": "N5",
+      "category": "normal",
+      "title": "서울시, 대중교통 환승 할인 확대… 내달 1일부터 시행",
+      "expected_grade": "신뢰 가능",
+      "actual_grade": "신뢰 가능",
+      "scores": {
+        "content": 82.5,
+        "provocative": 97.5,
+        "source": 85.0,
+        "total": 88.2
+      },
+      "dist": 0
+    },
+    {
+      "id": "S1",
+      "category": "sensational",
+      "title": "충격! 연예인 A씨, 끔찍한 사고로 망신… 폭로 이어져",
+      "expected_grade": "주의 필요",
+      "actual_grade": "의심 기사",
+      "scores": {
+        "content": 75.0,
+        "provocative": 15.0,
+        "source": 35.0,
+        "total": 46.0
+      },
+      "dist": 1
+    },
+    {
+      "id": "S2",
+      "category": "sensational",
+      "title": "경악!! 정치인 B, 역대급 폭로… 충격적 진실 드러나",
+      "expected_grade": "의심 기사",
+      "actual_grade": "의심 기사",
+      "scores": {
+        "content": 80.5,
+        "provocative": 15.1,
+        "source": 35.0,
+        "total": 48.5
+      },
+      "dist": 0
+    },
+    {
+      "id": "S3",
+      "category": "sensational",
+      "title": "전율! 기적의 다이어트, 일주일에 5kg 감량 비법 공개",
+      "expected_grade": "주의 필요",
+      "actual_grade": "주의 필요",
+      "scores": {
+        "content": 81.9,
+        "provocative": 50.0,
+        "source": 35.0,
+        "total": 61.4
+      },
+      "dist": 0
+    },
+    {
+      "id": "M1",
+      "category": "mismatch",
+      "title": "이재명 대통령, 4월 경제정책 전면 폐기 선언",
+      "expected_grade": "의심 기사",
+      "actual_grade": "의심 기사",
+      "scores": {
+        "content": 1.3,
+        "provocative": 97.5,
+        "source": 35.0,
+        "total": 41.7
+      },
+      "dist": 0
+    },
+    {
+      "id": "M2",
+      "category": "mismatch",
+      "title": "삼성전자 신형 갤럭시 출시, 가격 200만원대 책정",
+      "expected_grade": "의심 기사",
+      "actual_grade": "의심 기사",
+      "scores": {
+        "content": 19.8,
+        "provocative": 88.0,
+        "source": 35.0,
+        "total": 46.7
+      },
+      "dist": 0
+    },
+    {
+      "id": "M3",
+      "category": "mismatch",
+      "title": "유명 가수 OOO, 결혼 발표… 상대는 일반인",
+      "expected_grade": "의심 기사",
+      "actual_grade": "신뢰 낮음",
+      "scores": {
+        "content": 6.1,
+        "provocative": 78.4,
+        "source": 35.0,
+        "total": 37.2
+      },
+      "dist": 1
+    },
+    {
+      "id": "U1",
+      "category": "unknown_source",
+      "title": "[단독] 익명 매체, 정부 정책 비판 보도",
+      "expected_grade": "주의 필요",
+      "actual_grade": "의심 기사",
+      "scores": {
+        "content": 46.4,
+        "provocative": 62.8,
+        "source": 35.0,
+        "total": 49.9
+      },
+      "dist": 1
+    }
+  ]
+}
