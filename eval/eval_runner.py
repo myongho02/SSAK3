@@ -24,7 +24,20 @@ from pathlib import Path
 
 # eval_dataset 모듈 로딩
 sys.path.insert(0, str(Path(__file__).parent))
-from eval_dataset import all_cases, GRADE_RANK, grade_distance
+from eval_dataset import all_cases as base_cases, GRADE_RANK, grade_distance
+
+# M2: 사용자 피드백 케이스도 자동 포함 (있을 때만)
+try:
+    from feedback_cases import FEEDBACK_CASES
+except ImportError:
+    FEEDBACK_CASES = []
+
+
+def all_cases():
+    """기본 평가 케이스 + 피드백 케이스를 합쳐 반환."""
+    return list(base_cases()) + [
+        {**c, "category": "feedback"} for c in FEEDBACK_CASES
+    ]
 
 
 def analyze_via_worker(title, body, source_name):

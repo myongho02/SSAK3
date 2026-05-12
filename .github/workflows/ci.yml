@@ -90,3 +90,72 @@ jobs:
         run: |
           docker compose logs api
           docker compose logs rabbitmq
+
+  # ========== M8 회귀 평가 (K1 자동 실행) ==========
+  # main 브랜치 + workflow_dispatch에만 실행 (worker 빌드 시간 큼)
+  # PR/feature 브랜치에서는 smoke test까지만
+  regression-eval:
+    name: K1 회귀 평가 (Worker 빌드 + 12케이스 분류 정확도)
+    runs-on: ubuntu-latest
+    needs: [smoke-test]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space (worker 이미지용)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+      - name: 전체 서비스 가동 (worker 포함)
+        run: |
+          docker compose up -d --build
+          # Worker 모델 로딩 대기 (PREDOWNLOAD_MODELS=true 기본값이라 빌드 시 포함)
+          for i in $(seq 1 60); do
+            if docker compose logs worker-1 2>&1 | grep -q "큐 대기 중"; then
+              echo "✅ Worker-1 ready after ${i}*5s"
+              break
+            fi
+            sleep 5
+          done
+      - name: K1 평가 실행
+        run: |
+          python3 eval/eval_runner.py | tee /tmp/eval_output.txt
+      - name: M6 리포트 생성
+        run: |
+          python3 eval/eval_report.py | tee /tmp/report_output.txt
+      - name: 정확도 회귀 검출 (Loose Accuracy 90% 미만이면 실패)
+        run: |
+          python3 -c "
+          import json
+          with open('eval/results.json') as f:
+              d = json.load(f)
+          loose = d.get('loose_accuracy', 0)
+          strict = d.get('strict_accuracy', 0)
+          print(f'Strict: {100*strict:.1f}% / Loose: {100*loose:.1f}%')
+          assert loose >= 0.90, f'❌ 회귀 검출! Loose Accuracy가 90% 미만으로 떨어짐: {100*loose:.1f}%'
+          print('✅ 회귀 없음 — Loose Accuracy ≥ 90%')
+          "
+      - name: 리포트 아티팩트 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-eval-results
+          path: |
+            eval/results.json
+            eval/report.json
+            /tmp/eval_output.txt
+            /tmp/report_output.txt
+      - name: PR/커밋 요약에 결과 추가
+        if: always()
+        run: |
+          {
+            echo "## 📊 K1 회귀 평가 결과"
+            echo ""
+            echo '```'
+            tail -40 /tmp/report_output.txt
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY

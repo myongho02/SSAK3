@@ -202,6 +202,31 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # ── M1 사용자 피드백 (분석 정확도 신고/평가) ──
+    # 팀원/사용자가 분석 결과 카드에서 👍/👎 + 카테고리 + 코멘트 제출
+    # 누적된 피드백은 회귀 평가 데이터셋으로 자동 변환 가능
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            result_id INTEGER NOT NULL,
+            user_id INTEGER,
+            rating INTEGER NOT NULL,
+            category TEXT,
+            comment TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (result_id) REFERENCES analysis_results(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    ''')
+    # 같은 사용자가 같은 결과에 중복 피드백 못 하도록 unique 인덱스
+    try:
+        cursor.execute('''
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_unique
+            ON feedback(result_id, user_id)
+        ''')
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -869,6 +894,167 @@ def get_result(result_id):
     except Exception as e:
         print(f"[API] 결과 조회 실패 (id={result_id}): {e}")
         return jsonify({"error": f"DB 조회 실패: {str(e)}"}), 500
+
+
+# ========== M1 사용자 피드백 ==========
+
+# 피드백 카테고리 — 학회 발표 시 분류 기준
+FEEDBACK_CATEGORIES = [
+    "accurate",           # 분석 정확
+    "false_positive",     # 정상인데 의심으로 분류 (거짓 양성)
+    "false_negative",     # 자극적인데 신뢰로 분류 (거짓 음성)
+    "keyword_miss",       # 키워드 매칭 누락
+    "source_unknown",     # 출처가 큰데 불명으로 분류
+    "provocative_miss",   # 자극적 단어 누락
+    "ux_issue",           # UX/UI 문제
+    "other",              # 기타
+]
+
+
+@app.route('/results/<int:result_id>/feedback', methods=['POST'])
+def submit_feedback(result_id):
+    """[M1] 분석 결과에 대한 사용자 피드백 제출.
+
+    body: {
+        "rating": 1~5 (또는 0=👎, 1=👍 단순 형식),
+        "category": "accurate" | "false_positive" | ...,
+        "comment": "자유 텍스트"
+    }
+    같은 사용자가 같은 결과에 다시 보내면 갱신(UPSERT).
+    """
+    user_id = auth_user(request)
+    if not user_id:
+        return jsonify({"error": "로그인이 필요합니다"}), 401
+    data = request.get_json() or {}
+
+    # 입력 검증
+    try:
+        rating = int(data.get('rating', 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "rating은 정수여야 합니다"}), 400
+    if rating not in (0, 1, 2, 3, 4, 5):
+        return jsonify({"error": "rating은 0~5 사이여야 합니다"}), 400
+
+    category = (data.get('category') or '').strip()
+    if category and category not in FEEDBACK_CATEGORIES:
+        return jsonify({"error": f"category는 다음 중 하나여야 합니다: {FEEDBACK_CATEGORIES}"}), 400
+
+    comment = (data.get('comment') or '').strip()[:1000]  # 1000자 제한
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        # 결과 존재 확인 + 본인 결과 또는 공유된 결과만 평가 가능
+        cursor.execute(
+            "SELECT user_id, share_token FROM analysis_results WHERE id = ?",
+            (result_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "분석 결과를 찾을 수 없습니다"}), 404
+        # UPSERT (SQLite ON CONFLICT)
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('''
+            INSERT INTO feedback (result_id, user_id, rating, category, comment, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(result_id, user_id) DO UPDATE SET
+                rating = excluded.rating,
+                category = excluded.category,
+                comment = excluded.comment,
+                created_at = excluded.created_at
+        ''', (result_id, user_id, rating, category, comment, now))
+        conn.commit()
+        conn.close()
+        return jsonify({"message": "피드백 제출 완료", "result_id": result_id})
+    except Exception as e:
+        return jsonify({"error": f"피드백 저장 실패: {str(e)}"}), 500
+
+
+@app.route('/results/<int:result_id>/feedback', methods=['GET'])
+def get_feedback(result_id):
+    """본인이 해당 결과에 남긴 피드백 조회 (재방문 시 폼 채워주기 위해)."""
+    user_id = auth_user(request)
+    if not user_id:
+        return jsonify({})
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT rating, category, comment, created_at "
+            "FROM feedback WHERE result_id = ? AND user_id = ?",
+            (result_id, user_id)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return jsonify(dict(row) if row else {})
+    except Exception:
+        return jsonify({})
+
+
+@app.route('/feedback/all', methods=['GET'])
+def get_all_feedback():
+    """전체 피드백 + 분석 결과 조인 — 회귀 평가 / 통계용.
+
+    누구나 본인 피드백은 조회 가능. 다른 사용자의 피드백은 제외.
+    학회 발표용 통계 데이터 추출에 사용.
+    """
+    user_id = auth_user(request)
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        if user_id:
+            cursor.execute('''
+                SELECT f.id, f.result_id, f.rating, f.category, f.comment, f.created_at,
+                       r.url, r.title, r.total_score, r.grade,
+                       r.content_score, r.provocative_score, r.source_score,
+                       r.source_name
+                FROM feedback f
+                JOIN analysis_results r ON f.result_id = r.id
+                WHERE f.user_id = ?
+                ORDER BY f.created_at DESC
+            ''', (user_id,))
+        else:
+            cursor.execute("SELECT * FROM feedback WHERE 1=0")  # 비회원은 빈 결과
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        return jsonify(rows)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/feedback/summary', methods=['GET'])
+def feedback_summary():
+    """전체 피드백 통계 — 학회 발표용.
+
+    카테고리별 분포 + 평균 rating + 본인 결과 기준 통계.
+    """
+    user_id = auth_user(request)
+    if not user_id:
+        return jsonify({})
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT category, COUNT(*) FROM feedback WHERE user_id = ? GROUP BY category",
+            (user_id,)
+        )
+        by_category = {row[0] or "(no category)": row[1] for row in cursor.fetchall()}
+        cursor.execute(
+            "SELECT AVG(rating), COUNT(*) FROM feedback WHERE user_id = ?",
+            (user_id,)
+        )
+        avg, n = cursor.fetchone()
+        conn.close()
+        return jsonify({
+            "total": n or 0,
+            "average_rating": round(avg, 2) if avg else None,
+            "by_category": by_category,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ========== J4 공유 링크 ==========

@@ -1650,6 +1650,92 @@ else:
 
         st.markdown(card_html, unsafe_allow_html=True)
 
+        # ─────────── M1 피드백 UI (회원만, 본인 결과만) ───────────
+        if auth_user_info():
+            result_id = int(row['id'])
+            with st.expander(f"💬 이 분석에 피드백 남기기 (#{result_id})", expanded=False):
+                # 기존 피드백 불러오기 (재방문 시)
+                existing_fb = {}
+                try:
+                    _r = requests.get(
+                        f"{API_URL}/results/{result_id}/feedback",
+                        headers=auth_headers(), timeout=5
+                    )
+                    if _r.status_code == 200:
+                        existing_fb = _r.json() or {}
+                except Exception:
+                    pass
+
+                col_r, col_c = st.columns([1, 2])
+                with col_r:
+                    rating = st.radio(
+                        "정확도 평가 (이 분석에 동의?)",
+                        options=[5, 4, 3, 2, 1],
+                        format_func=lambda x: {
+                            5: "⭐⭐⭐⭐⭐ 완벽 일치",
+                            4: "⭐⭐⭐⭐ 대체로 일치",
+                            3: "⭐⭐⭐ 보통",
+                            2: "⭐⭐ 어긋남",
+                            1: "⭐ 완전 어긋남",
+                        }[x],
+                        index=([5, 4, 3, 2, 1].index(existing_fb["rating"])
+                               if existing_fb.get("rating") in [5, 4, 3, 2, 1]
+                               else 2),
+                        key=f"fb_rating_{result_id}",
+                    )
+                with col_c:
+                    category_options = {
+                        "": "── 카테고리 선택 (선택) ──",
+                        "accurate": "✅ 분석 정확함",
+                        "false_positive": "🟡 정상인데 의심으로 분류 (False Positive)",
+                        "false_negative": "🔴 자극적인데 신뢰로 분류 (False Negative)",
+                        "keyword_miss": "📝 키워드가 본문에 있는데 X로 표시됨",
+                        "source_unknown": "📌 큰 매체인데 출처 불명(35점)",
+                        "provocative_miss": "⚡ 자극적 단어가 사전에 누락됨",
+                        "ux_issue": "🖥 UX/UI 문제",
+                        "other": "❓ 기타",
+                    }
+                    cat_keys = list(category_options.keys())
+                    category = st.selectbox(
+                        "오류 카테고리 (있으면 선택)",
+                        options=cat_keys,
+                        format_func=lambda k: category_options[k],
+                        index=(cat_keys.index(existing_fb["category"])
+                               if existing_fb.get("category") in cat_keys
+                               else 0),
+                        key=f"fb_cat_{result_id}",
+                    )
+                    comment = st.text_area(
+                        "추가 코멘트 (예: '이 매체는 큰 매체인데 출처 불명으로 나옴')",
+                        value=existing_fb.get("comment", ""),
+                        key=f"fb_cmt_{result_id}",
+                        height=70,
+                    )
+
+                col_submit, col_status = st.columns([1, 2])
+                with col_submit:
+                    if st.button("📤 피드백 제출", key=f"fb_submit_{result_id}"):
+                        try:
+                            _r = requests.post(
+                                f"{API_URL}/results/{result_id}/feedback",
+                                json={
+                                    "rating": rating,
+                                    "category": category,
+                                    "comment": comment,
+                                },
+                                headers=auth_headers(),
+                                timeout=5,
+                            )
+                            if _r.status_code == 200:
+                                st.success("✅ 피드백 제출 완료. 감사합니다!")
+                            else:
+                                st.error(f"❌ {_r.json().get('error', '제출 실패')}")
+                        except Exception as _e:
+                            st.error(f"❌ API 실패: {_e}")
+                with col_status:
+                    if existing_fb.get("created_at"):
+                        st.caption(f"이전 제출: {existing_fb['created_at']} — 수정 후 다시 제출 가능")
+
 # ================================================================
 # 분석 실패 기사 — 별도 섹션
 # ================================================================
