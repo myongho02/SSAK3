@@ -11,3 +11,8 @@ data/
 
 # 환경 변수 (민감정보 — ngrok 토큰, RabbitMQ 자격증명 등)
 .env
+
+# 매번 실행할 때 자동 생성/덮어쓰기되는 파일
+# (학회 발표 baseline은 docs/에 별도 보관, eval/는 baseline + 회귀 평가용 보존)
+/benchmark_results.json
+/tmp/
