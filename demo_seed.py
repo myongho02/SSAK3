@@ -19,22 +19,28 @@ API_URL = "http://localhost:5001"
 
 # ── 정상 기사 (주요 언론사, 객관 보도 톤) ──
 # 발표 시연 시 "신뢰 가능" 등급(80+)이 기대되는 케이스
+# 검증일: 2026-05-15. 학교 발표 시연용 URL 셋 (main 시스템에서 실제 작동 확인).
+# 발표 전날 URL 만료 가능성이 있으므로 collect_news_bulk.py 로 신선 URL 보충 권장.
 NORMAL_ARTICLES = [
-    "https://n.news.naver.com/mnews/article/001/0015234701",  # 연합뉴스 (주요 85점)
-    "https://n.news.naver.com/mnews/article/056/0011847000",  # KBS
-    "https://n.news.naver.com/mnews/article/214/0001401000",  # SBS
-    "https://n.news.naver.com/mnews/article/214/0001400000",  # SBS
-    "https://n.news.naver.com/mnews/article/422/0000700000",  # 뉴스1
+    # 연합뉴스 정치 (신뢰가능 86.8점 — 검증)
+    "https://www.yna.co.kr/view/AKR20260515145500063",
+    # 연합뉴스 정치 (신뢰가능 85.6점 — 검증)
+    "https://www.yna.co.kr/view/AKR20260515144100062",
 ]
 
 # ── 자극성 표현 의심 기사 ──
-# 자극적 단어가 많거나 제목과 본문 일치도가 낮은 케이스 (등급 주의/의심 기대)
-# 실제 URL은 발표 직전 사용자가 직접 골라서 채우는 것을 권장 (시점에 따라 변동)
+# 자극적 단어나 인용 제목으로 자극성 점수가 낮은 케이스 (의심 등급 기대)
 SUSPECT_ARTICLES = [
-    # 사용자가 시연 직전 다음 도메인에서 자극적 제목의 기사를 골라 채워주세요:
-    # - news.naver.com 검색에서 "충격" "경악" "단독" 키워드로 검색한 결과 중 선택
-    # 예시 (실제 URL이 만료될 수 있음):
-    # "https://www.example-suspect-1.com/...",
+    # 매경 사회 (의심 42.0점 — 자극적 단어 "거짓말/속여/챙긴")
+    "https://www.mk.co.kr/news/society/12046305",
+    # 매경 사회 (의심 47.3점 — 자극적 단어 "노려/해킹")
+    "https://www.mk.co.kr/news/society/12046474",
+    # 매경 정치 (의심 45.6점 — [속보] + 미사일/긴급)
+    "https://www.mk.co.kr/news/politics/12020887",
+    # 경향 사회 (의심 46.4점 — 의문형 자극 "진짜 파업하나")
+    "https://www.khan.co.kr/article/202605132042005/?utm_source=khan_rss&utm_medium=r",
+    # 경향 사회 (의심 46.3점 — 인용형 자극 + 위증/구형)
+    "https://www.khan.co.kr/article/202605131458001/?utm_source=khan_rss&utm_medium=r",
 ]
 
 
