@@ -77,13 +77,17 @@ jobs:
           exit 1
       - name: 회원가입 + /auth/me 검증
         run: |
+          # API의 jsonify는 기본 ensure_ascii=True 라 한글이 \uXXXX 로 escape됨.
+          # raw 한글 grep으로는 매칭 안 되므로 구조적 검증(키 존재 + 값 매칭)으로 변경.
           REG=$(curl -sf -X POST http://localhost:5001/auth/register \
             -H "Content-Type: application/json" \
             -d '{"username":"citest","password":"CiTest123"}')
-          echo "$REG" | grep -q "회원가입 완료" || (echo "❌ 회원가입 실패: $REG" && exit 1)
-          TOKEN=$(echo "$REG" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+          echo "회원가입 응답: $REG"
+          TOKEN=$(echo "$REG" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('token'), 'token 키 없음'; print(d['token'])")
+          [ -n "$TOKEN" ] || (echo "❌ 회원가입 실패 (token 없음): $REG" && exit 1)
           ME=$(curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:5001/auth/me)
-          echo "$ME" | grep -q "citest" || (echo "❌ /auth/me 실패: $ME" && exit 1)
+          echo "/auth/me 응답: $ME"
+          echo "$ME" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('username')=='citest', f'username 불일치: {d}'"
           echo "✅ 인증 흐름 통과"
       - name: 실패 시 로그 수집
         if: failure()
