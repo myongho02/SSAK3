@@ -71,6 +71,83 @@ NLI_ID2LABEL = nli_model.config.id2label
 print(f"{WORKER_TAG} NLI 라벨 매핑: {NLI_ID2LABEL}")
 print(f"{WORKER_TAG} 본문 일치도 NLI 모델 로딩 완료!")
 
+# ========== 외부 팩트체크 DB 로드 (보조 신호) ==========
+# 논문 2.2.2: "보조적으로는 SNU 팩트체크 등 공개된 외부 검증 자료를 사전 임베드하여
+# 입력 기사 제목과의 유사도를 비교하고, 이미 거짓으로 판정된 사례와 일치할 경우
+# 분석 결과에 신호로 반영한다."
+# 점수에 합산하지 않고 별도 신호로 표시 (사람 검증 + AI 분석은 다른 차원).
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+FACTCHECK_DB_PATH = "/app/factcheck_db.json"
+FACTCHECK_THRESHOLD = 0.15  # 코사인 유사도 임계 (TF-IDF char_wb 기준 — 한국어 짧은 텍스트 친화)
+
+_factcheck_cases = []
+_factcheck_vectorizer = None
+_factcheck_matrix = None
+
+
+def load_factcheck_db():
+    """외부 팩트체크 거짓 사례 DB 로드 + TF-IDF 벡터화 (Worker 시작 시 1회)."""
+    global _factcheck_cases, _factcheck_vectorizer, _factcheck_matrix
+    try:
+        with open(FACTCHECK_DB_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _factcheck_cases = data.get("cases", [])
+        if not _factcheck_cases:
+            print(f"{WORKER_TAG} [팩트체크 DB] 비어있음 → 보조 신호 비활성")
+            return
+        # 제목 + 본문 발췌 결합한 corpus
+        corpus = [
+            (c.get("title", "") + " " + c.get("body_excerpt", "")[:400])
+            for c in _factcheck_cases
+        ]
+        # 한국어 친화: 문자 n-gram (char_wb)
+        _factcheck_vectorizer = TfidfVectorizer(
+            analyzer="char_wb", ngram_range=(2, 3), max_features=5000
+        )
+        _factcheck_matrix = _factcheck_vectorizer.fit_transform(corpus)
+        print(f"{WORKER_TAG} [팩트체크 DB 로드] {len(_factcheck_cases)}건 임베드 완료")
+    except FileNotFoundError:
+        print(f"{WORKER_TAG} [팩트체크 DB 파일 없음] {FACTCHECK_DB_PATH}")
+    except Exception as e:
+        print(f"{WORKER_TAG} [팩트체크 DB 로드 실패] {e}")
+
+
+def factcheck_similarity(title, body):
+    """입력 기사와 팩트체크 DB의 거짓 사례 간 최고 유사도 케이스 반환.
+
+    Returns: None (DB 미로드/임계 미달) 또는 dict {
+        similarity, matched_title, matched_url, has_false_signal
+    }
+    """
+    if not _factcheck_cases or _factcheck_vectorizer is None:
+        return None
+    try:
+        query = (title or "") + " " + (body or "")[:400]
+        q_vec = _factcheck_vectorizer.transform([query])
+        sims = cosine_similarity(q_vec, _factcheck_matrix)[0]
+        if len(sims) == 0:
+            return None
+        top_idx = int(sims.argmax())
+        top_sim = float(sims[top_idx])
+        if top_sim < FACTCHECK_THRESHOLD:
+            return None
+        case = _factcheck_cases[top_idx]
+        return {
+            "similarity": round(top_sim, 3),
+            "matched_title": case.get("title", "")[:120],
+            "matched_url": case.get("url", ""),
+            "has_false_signal": bool(case.get("has_false_signal", False)),
+            "matched_keywords": case.get("matched_keywords", [])[:5],
+        }
+    except Exception as e:
+        print(f"{WORKER_TAG} [팩트체크 유사도 오류] {e}")
+        return None
+
+
+load_factcheck_db()
+
 # ========== DB 초기화 ==========
 DB_PATH = "/app/data/results.db"
 
@@ -159,6 +236,14 @@ def init_db():
         pass
     try:
         cursor.execute("ALTER TABLE jobs ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+
+    # ── factcheck_match: 외부 팩트체크 DB와의 유사도 신호 (JSON) ──
+    # 논문 2.2.2 "보조적으로 SNU 팩트체크 등 외부 검증 자료 사전 임베드"
+    # 형식: {"similarity": 0.73, "matched_title": "...", "matched_url": "...", "has_false_signal": true}
+    try:
+        cursor.execute("ALTER TABLE analysis_results ADD COLUMN factcheck_match TEXT")
     except sqlite3.OperationalError:
         pass
 
@@ -1096,8 +1181,9 @@ def save_to_db(result):
                 (url, title, body, content_score, provocative_score, source_score,
                  total_score, grade, status, analyzed_at,
                  matched_keywords, detected_provocative, ai_sentiment, source_name,
-                 worker_id, processing_time, cache_stats, user_label, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 worker_id, processing_time, cache_stats, user_label, user_id,
+                 factcheck_match)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 result['url'], result['title'], result['body'][:500],
                 result['content'], result['provocative'], result['source'],
@@ -1111,7 +1197,8 @@ def save_to_db(result):
                 result.get('processing_time', None),    # 처리 소요 시간 (초)
                 result.get('cache_stats', None),        # 캐시 적중률 스냅샷 (JSON)
                 result.get('user_label', ''),           # 분석 요청자 프로필 라벨
-                result.get('user_id')                   # Phase G — 인증된 회원 식별자
+                result.get('user_id'),                  # Phase G — 인증된 회원 식별자
+                result.get('factcheck_match'),          # 외부 팩트체크 DB 유사도 신호 (JSON)
             ))
             conn.commit()
             return True  # 저장 성공
@@ -1309,6 +1396,10 @@ def process_message(ch, method, properties, body):
     total = calculate_total_score(content, provocative, source)
     grade = get_grade(total)
 
+    # ── 보조 신호: 외부 팩트체크 DB 유사도 비교 (논문 2.2.2 보조 임베드) ──
+    # 점수에 합산하지 않고 별도 메타로 저장. UI에서 사용자에게 추가 신호로 노출.
+    fact_match = factcheck_similarity(title, article_body)
+
     # ── 처리 시간 측정 완료 ──
     _elapsed = time.perf_counter() - _start_time
 
@@ -1334,6 +1425,7 @@ def process_message(ch, method, properties, body):
         'cache_stats': cache_snapshot,  # 처리 완료 시점의 LRU 캐시 적중률 스냅샷
         'user_label': user_label,  # 분석 요청자 프로필 라벨
         'user_id': user_id,  # Phase G — 인증된 회원 식별자 (None=비회원)
+        'factcheck_match': json.dumps(fact_match, ensure_ascii=False) if fact_match else None,
     }
 
     if save_to_db(result):

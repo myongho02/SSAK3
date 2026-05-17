@@ -105,8 +105,42 @@ def auth_headers():
 
 
 def auth_user_info():
-    """현재 로그인 사용자 정보. 없으면 None."""
-    return st.session_state.get("auth_user")
+    """현재 로그인 사용자 정보. 없으면 None.
+    페이지 새로고침 시 session_state가 휘발되면 URL query param의 't'로 복원 시도."""
+    info = st.session_state.get("auth_user")
+    if info:
+        return info
+    # ── 새로고침 복원: URL의 ?t=<token> 으로 세션 복구 ──
+    try:
+        qp = st.query_params if hasattr(st, "query_params") else {}
+        tok = qp.get("t")
+        if isinstance(tok, list):
+            tok = tok[0] if tok else None
+        if not tok:
+            return None
+        r = requests.get(f"{API_URL}/auth/me",
+                         headers={"Authorization": f"Bearer {tok}"}, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("authenticated"):
+                st.session_state["auth_token"] = tok
+                st.session_state["auth_user"] = {
+                    "user_id": data["user_id"], "username": data["username"]
+                }
+                return st.session_state["auth_user"]
+    except Exception:
+        pass
+    return None
+
+
+def _persist_token_to_url(token):
+    """토큰을 URL query param에 저장 → 새로고침 시에도 세션 유지.
+    [주의] 학교 발표용 단순 영속화. 운영 환경에서는 httpOnly cookie 권장."""
+    try:
+        if hasattr(st, "query_params"):
+            st.query_params["t"] = token
+    except Exception:
+        pass
 
 
 def auth_login(username, password):
@@ -121,6 +155,7 @@ def auth_login(username, password):
             st.session_state["auth_user"] = {
                 "user_id": data["user_id"], "username": data["username"]
             }
+            _persist_token_to_url(data["token"])
             return True, None
         return False, r.json().get("error", "로그인 실패")
     except Exception as e:
@@ -139,6 +174,7 @@ def auth_register(username, password):
             st.session_state["auth_user"] = {
                 "user_id": data["user_id"], "username": data["username"]
             }
+            _persist_token_to_url(data["token"])
             return True, None
         return False, r.json().get("error", "회원가입 실패")
     except Exception as e:
@@ -146,7 +182,7 @@ def auth_register(username, password):
 
 
 def auth_logout():
-    """로그아웃."""
+    """로그아웃 → session_state + URL query param 모두 정리."""
     try:
         requests.post(f"{API_URL}/auth/logout",
                       headers=auth_headers(), timeout=5)
@@ -154,6 +190,11 @@ def auth_logout():
         pass
     st.session_state.pop("auth_token", None)
     st.session_state.pop("auth_user", None)
+    try:
+        if hasattr(st, "query_params") and "t" in st.query_params:
+            del st.query_params["t"]
+    except Exception:
+        pass
 
 
 # ── 로그인 게이트 페이지 (비로그인 + 비비회원모드 시) ──
@@ -1625,6 +1666,29 @@ else:
 <div class="evidence-row">최종 출처 점수: <b>{source_s:.1f}점</b></div>
 </div>"""
 
+        # ── 보조 신호: 외부 팩트체크 DB 유사도 (논문 2.2.2) ──
+        # 점수 합산 X. 별도 신호로 표시.
+        fact_html = ""
+        try:
+            fact_data = json.loads(row.get('factcheck_match', '') or 'null') if row.get('factcheck_match') else None
+        except Exception:
+            fact_data = None
+        if fact_data and fact_data.get('similarity', 0) > 0:
+            sim_pct = fact_data['similarity'] * 100
+            mt = safe(fact_data.get('matched_title', ''))[:80]
+            mu = safe(fact_data.get('matched_url', ''))
+            has_false = fact_data.get('has_false_signal', False)
+            if has_false:
+                bg, border, icon, label = "#FEE2E2", "#DC2626", "🚨", "거짓 판정 사례와 유사"
+            else:
+                bg, border, icon, label = "#FEF3C7", "#D97706", "🔍", "팩트체크 검증 대상 주제와 유사"
+            fact_html = f"""<div class="evidence-section" style="background:{bg};border-left:4px solid {border};">
+<div class="evidence-title">{icon} 외부 팩트체크 보조 신호</div>
+<div class="evidence-row"><b>{label}</b> — 유사도 <b>{sim_pct:.0f}%</b></div>
+<div class="evidence-row" style="font-size:12px;color:#4B5563;">참고 케이스: <a href="{mu}" target="_blank" style="color:#1D4ED8;text-decoration:underline;">{mt}</a></div>
+<div class="evidence-row" style="font-size:11px;color:#6B7280;">※ 점수에 합산되지 않는 별도 신호입니다.</div>
+</div>"""
+
         # ── 처리한 Worker 정보 표시용 ──
         # worker_id 컬럼에서 해당 기사를 분석한 Worker 번호를 가져온다
         _card_wid = str(row.get('worker_id', '') or '')
@@ -1667,6 +1731,7 @@ else:
 {evidence1}
 {evidence2}
 {evidence3}
+{fact_html}
 <p style="margin: 16px 0 0 0; font-size: 13px; color: #64748B; line-height: 1.6;">{body_preview}</p>
 </div></div>"""
 

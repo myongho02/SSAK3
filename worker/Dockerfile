@@ -32,5 +32,6 @@ RUN if [ "$PREDOWNLOAD_MODELS" = "true" ]; then \
     fi
 
 COPY worker.py .
+COPY factcheck_db.json /app/factcheck_db.json
 
 CMD ["python", "-u", "worker.py"]

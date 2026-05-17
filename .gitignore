@@ -16,3 +16,12 @@ data/
 # (학회 발표 baseline은 docs/에 별도 보관, eval/는 baseline + 회귀 평가용 보존)
 /benchmark_results.json
 /tmp/
+
+# 시험·시연 부산물 (수집기 결과)
+/factcheck_db.json
+!worker/factcheck_db.json
+demo_seed_urls.json
+news_urls_*.json
+benchmark_*.json
+analysis_*.json
+bench_*stages/
