@@ -197,15 +197,17 @@ def auth_logout():
         pass
 
 
-# ── 로그인 게이트 페이지 (비로그인 + 비비회원모드 시) ──
+# ── 로그인 게이트 페이지 (비로그인 시) ──
+# [정책] 비회원 모드 제거 — 회원가입은 간단(아이디 3~30자, 비밀번호 8자+영숫자)이며
+# 사용자별 분석 이력 격리·세션 영속·새로고침 안정성을 보장하기 위해 회원만 진입 허용.
 def render_login_gate():
-    """로그인/회원가입/비회원 모드 진입 페이지."""
+    """로그인/회원가입 진입 페이지."""
     st.markdown("""<div style="background: linear-gradient(135deg, #0F1B2D 0%, #1E3A5F 100%); padding: 40px 48px; border-radius: 20px; margin-bottom: 32px;">
 <h1 style="color: #FFFFFF; margin: 0; font-size: 36px; font-weight: 700;">📰 SSAK3 뉴스 신뢰도 분석</h1>
 <p style="color: #94A3B8; margin: 8px 0 0 0; font-size: 16px; font-weight: 300;">사용자별 분석 이력 격리 — 본인 분석만 본인에게 보입니다</p>
 </div>""", unsafe_allow_html=True)
 
-    tab_login, tab_register, tab_guest = st.tabs(["🔑 로그인", "📝 회원가입", "👀 비회원으로 둘러보기"])
+    tab_login, tab_register = st.tabs(["🔑 로그인", "📝 회원가입"])
 
     with tab_login:
         with st.form("login_form"):
@@ -236,12 +238,6 @@ def render_login_gate():
                         st.rerun()
                     else:
                         st.error(f"❌ {err}")
-
-    with tab_guest:
-        st.caption("로그인 없이 분석을 사용할 수 있습니다. 비회원 모드에서는 다른 비회원과 분석 이력이 공유될 수 있습니다.")
-        if st.button("비회원 모드로 진입", use_container_width=True):
-            st.session_state["guest_mode"] = True
-            st.rerun()
 
 
 # ========== J4 공유 링크 페이지 (게이트 우회 — 누구나 접근 가능) ==========
@@ -293,8 +289,9 @@ if _share_token:
     st.stop()
 
 
-# ── 인증 게이트 — 로그인/비회원모드 둘 다 아니면 게이트만 표시 ──
-if not auth_user_info() and not st.session_state.get("guest_mode"):
+# ── 인증 게이트 — 회원만 진입 (비회원 모드 폐지) ──
+# auth_user_info() 내부에서 URL ?t=토큰 자동 복원 → 새로고침 시에도 세션 유지.
+if not auth_user_info():
     render_login_gate()
     st.stop()
 
@@ -434,16 +431,6 @@ if _user:
     )
     if st.sidebar.button("로그아웃", use_container_width=True):
         auth_logout()
-        st.rerun()
-elif st.session_state.get("guest_mode"):
-    st.sidebar.markdown(
-        """<div style="text-align:center; padding: 8px 0; background: #475569; border-radius: 8px; margin: 0 0 8px 0;">
-<span style="color: white; font-weight: 600;">👀 비회원 모드</span>
-</div>""",
-        unsafe_allow_html=True,
-    )
-    if st.sidebar.button("로그인 화면으로", use_container_width=True):
-        st.session_state.pop("guest_mode", None)
         st.rerun()
 
 st.sidebar.markdown("---")
