@@ -307,20 +307,24 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: hidden;}
-/* 사이드바 펼치기 버튼(>)은 header를 숨겨도 항상 보이게 강제 — 안 그러면 사이드바 접은 뒤 다시 못 엶 */
+/* [사이드바 고정] 접기 버튼 자체를 숨겨 사이드바를 항상 펼친 상태로 유지.
+   원인: header{visibility:hidden}로 펼치기 버튼이 가려져 한번 접으면 다시 못 엶.
+   해결: 접기 버튼(>)을 없애 시연 중 실수로 접는 일 자체를 차단. */
+[data-testid="stSidebarCollapseButton"],
 [data-testid="stSidebarCollapsedControl"],
 [data-testid="collapsedControl"] {
-    visibility: visible !important;
+    display: none !important;
+}
+/* 혹시 접힌 상태로 진입하더라도 펼치기 컨트롤은 보이도록 백업 (위와 상충 시 아래 우선) */
+[data-testid="stSidebar"][aria-expanded="false"] ~ [data-testid="stSidebarCollapsedControl"] {
     display: flex !important;
-    opacity: 1 !important;
+    visibility: visible !important;
     z-index: 999999 !important;
     color: #0D9488 !important;
     background: #FFFFFF !important;
     border: 1px solid #0D9488 !important;
     border-radius: 8px !important;
 }
-[data-testid="stSidebarCollapsedControl"] svg,
-[data-testid="collapsedControl"] svg { color: #0D9488 !important; fill: #0D9488 !important; }
 [data-testid="stSidebar"] { background-color: #0F1B2D !important; }
 [data-testid="stSidebar"] * { color: #E2E8F0 !important; }
 [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.1) !important; }
