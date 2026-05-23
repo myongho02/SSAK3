@@ -23,7 +23,8 @@ DB_PATH = "/app/data/results.db"
 # Flask API 서버 주소 (docker-compose 내부 네트워크에서 서비스명으로 접근)
 API_URL = "http://api:5000"
 
-st.set_page_config(page_title="뉴스 신뢰도 분석", page_icon="📰", layout="wide")
+st.set_page_config(page_title="뉴스 신뢰도 분석", page_icon="📰", layout="wide",
+                   initial_sidebar_state="expanded")
 
 # ========== J9 PWA 주입 (모바일 앱처럼 "홈 화면에 추가" 가능) ==========
 # Streamlit은 head 직접 수정이 어려우므로 components.html로 manifest + theme-color 주입.
@@ -306,6 +307,20 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: hidden;}
+/* 사이드바 펼치기 버튼(>)은 header를 숨겨도 항상 보이게 강제 — 안 그러면 사이드바 접은 뒤 다시 못 엶 */
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] {
+    visibility: visible !important;
+    display: flex !important;
+    opacity: 1 !important;
+    z-index: 999999 !important;
+    color: #0D9488 !important;
+    background: #FFFFFF !important;
+    border: 1px solid #0D9488 !important;
+    border-radius: 8px !important;
+}
+[data-testid="stSidebarCollapsedControl"] svg,
+[data-testid="collapsedControl"] svg { color: #0D9488 !important; fill: #0D9488 !important; }
 [data-testid="stSidebar"] { background-color: #0F1B2D !important; }
 [data-testid="stSidebar"] * { color: #E2E8F0 !important; }
 [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.1) !important; }
