@@ -715,6 +715,15 @@ def recompute_grade(score):
     else:
         return "신뢰 낮음"
 
+# 등급별 색상 매핑 — module 스코프 (dashboard 페이지 등 어디서나 사용)
+GRADE_COLORS = {
+    "신뢰 가능": "#10B981",
+    "주의 필요": "#F59E0B",
+    "의심 기사": "#F97316",
+    "신뢰 낮음": "#EF4444",
+    "분석 불가": "#9CA3AF",
+}
+
 # ================================================================
 # 분석 설정 · 필터 expander — 계정 설정 페이지에서만 표시
 # (위젯 변경 시 session_state에 자동 저장되어 위 변수에 반영됨)
@@ -1123,7 +1132,7 @@ if page_mode == "📈 대시보드":
 </div>""", unsafe_allow_html=True)
 
     # ─── 좌: 일별 추이 막대 / 우: 등급별 분포 도넛 ───
-    col_left, col_right = st.columns([1.6, 1])
+    col_left, col_right = st.columns([1.4, 1.1])
 
     with col_left:
         st.markdown("##### 📈 일별 분석 추이 (최근 7일)")
@@ -1149,11 +1158,11 @@ if page_mode == "📈 대시보드":
         _counts = [int(_grade_counts.get(g, 0)) for g in _grade_order]
         _total_g = sum(_counts) or 1
 
-        # 도넛 SVG 직접 생성
-        _r = 70
-        _stroke = 22
-        _size = (_r + _stroke) * 2 + 20
-        _cx = _cy = (_r + _stroke) + 10
+        # 도넛 SVG — 좁은 화면 대응(컴팩트 + 세로 배치)
+        _r = 56
+        _stroke = 18
+        _size = (_r + _stroke) * 2 + 16
+        _cx = _cy = (_r + _stroke) + 8
         _C = 2 * 3.14159 * _r
         _offset = 0
         _seg_html = ""
@@ -1170,20 +1179,22 @@ if page_mode == "📈 대시보드":
             _offset += _len
 
         _legend = "".join(
-            f'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#475569;margin:4px 0;">'
-            f'<span style="display:inline-block;width:12px;height:12px;background:{c};border-radius:2px;"></span>'
-            f'<b style="min-width:70px;">{g}</b><span style="color:#94A3B8;">{n}건 · {n/_total_g*100:.1f}%</span></div>'
+            f'<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;color:#475569;margin:3px 0;">'
+            f'<div style="display:flex;align-items:center;gap:6px;">'
+            f'<span style="display:inline-block;width:10px;height:10px;background:{c};border-radius:2px;flex-shrink:0;"></span>'
+            f'<b>{g}</b></div>'
+            f'<span style="color:#94A3B8;font-size:10px;white-space:nowrap;">{n}건·{n/_total_g*100:.0f}%</span></div>'
             for g, c, n in zip(_grade_order, _grade_colors_seg, _counts)
         )
 
-        st.markdown(f"""<div style="display:flex;align-items:center;gap:20px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:16px;">
-<svg width="{_size}" height="{_size}" viewBox="0 0 {_size} {_size}" style="flex-shrink:0;">
+        st.markdown(f"""<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:16px;display:flex;flex-direction:column;align-items:center;">
+<svg width="{_size}" height="{_size}" viewBox="0 0 {_size} {_size}">
 <circle cx="{_cx}" cy="{_cy}" r="{_r}" fill="none" stroke="#F1F5F9" stroke-width="{_stroke}"/>
 {_seg_html}
-<text x="{_cx}" y="{_cy + 4}" text-anchor="middle" font-size="24" font-weight="800" fill="#0F172A">{_total_g}</text>
-<text x="{_cx}" y="{_cy + 22}" text-anchor="middle" font-size="10" fill="#94A3B8">전체 건수</text>
+<text x="{_cx}" y="{_cy + 4}" text-anchor="middle" font-size="20" font-weight="800" fill="#0F172A">{_total_g}</text>
+<text x="{_cx}" y="{_cy + 20}" text-anchor="middle" font-size="9" fill="#94A3B8">전체 건수</text>
 </svg>
-<div style="flex:1;">{_legend}</div>
+<div style="width:100%;margin-top:12px;">{_legend}</div>
 </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
