@@ -202,10 +202,17 @@ def auth_logout():
 # [정책] 비회원 모드 제거 — 회원가입은 간단(아이디 3~30자, 비밀번호 8자+영숫자)이며
 # 사용자별 분석 이력 격리·세션 영속·새로고침 안정성을 보장하기 위해 회원만 진입 허용.
 def render_login_gate():
-    """로그인/회원가입 진입 페이지."""
-    st.markdown("""<div style="background: linear-gradient(135deg, #0F1B2D 0%, #1E3A5F 100%); padding: 40px 48px; border-radius: 20px; margin-bottom: 32px;">
-<h1 style="color: #FFFFFF; margin: 0; font-size: 36px; font-weight: 700;">📰 SSAK3 뉴스 신뢰도 분석</h1>
-<p style="color: #94A3B8; margin: 8px 0 0 0; font-size: 16px; font-weight: 300;">사용자별 분석 이력 격리 — 본인 분석만 본인에게 보입니다</p>
+    """로그인/회원가입 진입 페이지 — PPT 흰 톤 디자인."""
+    st.markdown("""<div style="text-align:center; margin: 48px 0 32px 0;">
+<div style="display:inline-flex;align-items:center;gap:14px;margin-bottom:12px;">
+<div style="background:#0D9488;width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;color:#FFFFFF;">📰</div>
+<div style="text-align:left;">
+<div style="font-size:24px;font-weight:800;color:#0F172A;letter-spacing:-0.3px;">SSAK3</div>
+<div style="font-size:12px;color:#94A3B8;">News Credibility Analyzer</div>
+</div>
+</div>
+<h1 style="font-size:28px;font-weight:700;color:#0F172A;margin:8px 0;">뉴스 신뢰도 분석 시스템</h1>
+<p style="font-size:14px;color:#64748B;margin:0;">규칙 기반 분석 + AI 보조지표 결합  ·  팀 싹쓰리</p>
 </div>""", unsafe_allow_html=True)
 
     tab_login, tab_register = st.tabs(["🔑 로그인", "📝 회원가입"])
@@ -249,9 +256,9 @@ if isinstance(_share_token, list):
     _share_token = _share_token[0] if _share_token else None
 
 if _share_token:
-    st.markdown("""<div style="background: linear-gradient(135deg, #0F1B2D 0%, #1E3A5F 100%); padding: 32px 48px; border-radius: 20px; margin-bottom: 24px;">
-<h1 style="color: #FFFFFF; margin: 0; font-size: 28px;">📰 SSAK3 공유 분석 결과</h1>
-<p style="color: #94A3B8; margin: 8px 0 0 0; font-size: 14px;">공유된 read-only 분석 결과입니다. 본인이 분석을 시도하려면 메인 페이지로 이동하세요.</p>
+    st.markdown("""<div style="background:#FFFFFF; padding: 32px 48px; border-radius: 16px; margin-bottom: 24px; border: 1px solid #E2E8F0;">
+<h1 style="color: #0F172A; margin: 0; font-size: 28px;">📰 SSAK3 공유 분석 결과</h1>
+<p style="color: #64748B; margin: 8px 0 0 0; font-size: 14px;">공유된 read-only 분석 결과입니다. 본인이 분석을 시도하려면 메인 페이지로 이동하세요.</p>
 </div>""", unsafe_allow_html=True)
     try:
         _r = requests.get(f"{API_URL}/share/{_share_token}", timeout=10)
@@ -308,46 +315,82 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
 footer {visibility: hidden;}
 header {visibility: hidden;}
 
-/* ───────── [PPT 디자인 V2] 전체 흰 배경 + 사이드바 hide + 상단 메뉴 ───────── */
-.stApp { background: #FFFFFF !important; }
+/* ───────── [PPT 디자인 V3] 흰 헤더 + 옅은 회색 본문 + 깔끔 카드 ───────── */
+.stApp { background: #F8FAFC !important; }
 .main .block-container {
-    background: #FFFFFF !important;
+    background: transparent !important;
     padding-top: 0 !important;
     padding-bottom: 48px !important;
     max-width: 1280px !important;
 }
-/* 사이드바 통째 hide — 모든 컨트롤은 본문 상단 expander로 이동됨 */
+/* 사이드바 통째 hide */
 section[data-testid="stSidebar"] { display: none !important; }
 [data-testid="stSidebarCollapsedControl"],
 [data-testid="collapsedControl"] { display: none !important; }
 [data-testid="stToolbar"] { display: none !important; }
-/* 상단 헤더 (다크 네이비 바) */
+
+/* PPT 슬라이드 2 스타일 — 흰색 헤더 바 (하단 옅은 border, 그림자 X) */
 .topbar {
-    background: #0F1B2D;
-    margin: 0 -32px 24px -32px;
-    padding: 14px 32px;
+    background: #FFFFFF;
+    margin: 0 -32px 0 -32px;
+    padding: 16px 40px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
+    border-bottom: 1px solid #E2E8F0;
 }
-.topbar-logo {
-    display: flex; align-items: center; gap: 10px;
-    color: #FFFFFF;
-}
+.topbar-logo { display: flex; align-items: center; gap: 12px; }
 .topbar-logo-icon {
     background: #0D9488; width: 36px; height: 36px;
     border-radius: 8px; display: flex; align-items: center; justify-content: center;
-    font-size: 18px;
+    font-size: 17px; color: #FFFFFF;
 }
 .topbar-logo-text {
-    font-size: 17px; font-weight: 800; color: #FFFFFF !important; letter-spacing: -0.3px;
+    font-size: 17px; font-weight: 800; color: #0F172A !important;
+    letter-spacing: -0.3px; line-height: 1.2;
 }
-.topbar-logo-sub { font-size: 11px; color: #94A3B8 !important; }
-.topbar-menu { display: flex; gap: 4px; }
+.topbar-logo-sub { font-size: 11px; color: #94A3B8 !important; line-height: 1.2; }
 .topbar-user {
-    color: #E2E8F0 !important; font-size: 13px;
-    background: #1E293B; padding: 6px 14px; border-radius: 8px;
+    display: flex; align-items: center; gap: 10px;
+    color: #475569 !important; font-size: 13px; font-weight: 500;
+}
+.topbar-user-avatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: #0D9488; color: #FFFFFF !important;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700;
+}
+
+/* 상단 메뉴 행 — PPT 슬라이드 2처럼 텍스트 링크 형태 (박스 X) */
+.menu-wrapper {
+    background: #FFFFFF;
+    margin: 0 -32px 32px -32px;
+    padding: 0 32px 0 32px;
+    border-bottom: 1px solid #E2E8F0;
+}
+.menu-wrapper .stButton > button {
+    background: transparent !important;
+    color: #64748B !important;
+    border: none !important;
+    border-bottom: 2px solid transparent !important;
+    border-radius: 0 !important;
+    padding: 10px 0 !important;
+    margin: 0 !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
+    box-shadow: none !important;
+    transition: all 0.15s !important;
+}
+.menu-wrapper .stButton > button:hover {
+    color: #0D9488 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+.menu-wrapper .stButton > button[kind="primary"] {
+    color: #0D9488 !important;
+    border-bottom: 2px solid #0D9488 !important;
+    font-weight: 700 !important;
+    background: transparent !important;
 }
 /* Streamlit 기본 텍스트 색상 위계 */
 .stApp p, .stApp span, .stApp div { color: #475569; }
@@ -508,10 +551,7 @@ section[data-testid="stSidebar"] { display: none !important; }
 # 페이지 상단 헤더 — 네이비 배경, 흰색 텍스트
 # HTML은 반드시 왼쪽 정렬 (들여쓰기 금지 — Markdown 코드 블록 방지)
 # ================================================================
-st.markdown("""<div style="background: linear-gradient(135deg, #0F1B2D 0%, #1E3A5F 100%); padding: 40px 48px; border-radius: 20px; margin-bottom: 32px; box-shadow: 0 4px 20px rgba(15,27,45,0.3);">
-<h1 style="color: #FFFFFF; margin: 0; font-size: 36px; font-weight: 700; letter-spacing: -0.5px;">📰 뉴스 신뢰도 분석 시스템</h1>
-<p style="color: #94A3B8; margin: 8px 0 0 0; font-size: 16px; font-weight: 300;">규칙 기반 분석 + AI 보조지표 결합 &nbsp;|&nbsp; 팀 싹쓰리</p>
-</div>""", unsafe_allow_html=True)
+# 메인 페이지 헤더 (다크 박스 제거 — 상단 흰 topbar로 대체됨)
 
 # (사이드바 컨트롤은 본문 상단 expander로 이동됨 — render_topbar 다음 위치)
 
@@ -540,28 +580,38 @@ df = load_data()
 # [V2 UI] 상단 헤더 메뉴 (사이드바 대체) — 페이지 전환 + 사용자 정보
 # ================================================================
 def render_topbar():
+    """PPT 슬라이드 2 스타일 — 흰 헤더 바 (로고 + 우측 사용자).
+    하단에 메뉴 한 줄(텍스트 링크 형태)이 이어진다."""
     _u = auth_user_info()
     _username = _u['username'] if _u else 'Guest'
+    _initial = (_username[:1] or '?').upper()
     st.markdown(f"""<div class="topbar">
 <div class="topbar-logo">
 <div class="topbar-logo-icon">📰</div>
 <div><div class="topbar-logo-text">SSAK3</div><div class="topbar-logo-sub">News Credibility Analyzer</div></div>
 </div>
-<div class="topbar-user">👤 {_username}</div>
+<div class="topbar-user">
+<span>{_username}</span>
+<div class="topbar-user-avatar">{_initial}</div>
+</div>
 </div>""", unsafe_allow_html=True)
 
 render_topbar()
 
-# 상단 메뉴 (페이지 전환) — 5컬럼 버튼
+# 상단 메뉴 (페이지 전환) — PPT처럼 텍스트 링크 형태
 _pages_avail = ["🔗 분석하기", "📈 대시보드", "🏎️ 성능 측정"]
 if auth_user_info():
     _pages_avail += ["⚙️ 계정 설정"]
 _pages_avail += ["🚪 로그아웃"]
 
 _current = st.session_state.get("page_mode", "🔗 분석하기")
-_menu_cols = st.columns(len(_pages_avail))
-for _c, _p in zip(_menu_cols, _pages_avail):
-    with _c:
+# 흰 배경 헤더 안에 메뉴를 두기 위한 wrapper (CSS .menu-wrapper)
+st.markdown('<div class="menu-wrapper">', unsafe_allow_html=True)
+# 왼쪽 여백 1 + 메뉴들 + 우측 여백 1로 균형
+_menu_layout = [1] + [1] * len(_pages_avail) + [1]
+_menu_cols = st.columns(_menu_layout)
+for _i, _p in enumerate(_pages_avail):
+    with _menu_cols[_i + 1]:
         _is_active = (_p == _current)
         if st.button(_p, key=f"_menu_{_p}", use_container_width=True,
                      type="primary" if _is_active else "secondary"):
@@ -571,6 +621,7 @@ for _c, _p in zip(_menu_cols, _pages_avail):
             else:
                 st.session_state["page_mode"] = _p
                 st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
 
 page_mode = st.session_state.get("page_mode", "🔗 분석하기")
 st.markdown("---")
