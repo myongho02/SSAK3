@@ -308,13 +308,46 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
 footer {visibility: hidden;}
 header {visibility: hidden;}
 
-/* ───────── [PPT 디자인 동일화] 전체 페이지 톤 — 옅은 회색 배경 + 흰색 카드 ───────── */
-.stApp { background: #F8FAFC !important; }
+/* ───────── [PPT 디자인 V2] 전체 흰 배경 + 사이드바 hide + 상단 메뉴 ───────── */
+.stApp { background: #FFFFFF !important; }
 .main .block-container {
-    background: #F8FAFC !important;
-    padding-top: 32px !important;
+    background: #FFFFFF !important;
+    padding-top: 0 !important;
     padding-bottom: 48px !important;
     max-width: 1280px !important;
+}
+/* 사이드바 통째 hide — 모든 컨트롤은 본문 상단 expander로 이동됨 */
+section[data-testid="stSidebar"] { display: none !important; }
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] { display: none !important; }
+[data-testid="stToolbar"] { display: none !important; }
+/* 상단 헤더 (다크 네이비 바) */
+.topbar {
+    background: #0F1B2D;
+    margin: 0 -32px 24px -32px;
+    padding: 14px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.topbar-logo {
+    display: flex; align-items: center; gap: 10px;
+    color: #FFFFFF;
+}
+.topbar-logo-icon {
+    background: #0D9488; width: 36px; height: 36px;
+    border-radius: 8px; display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+}
+.topbar-logo-text {
+    font-size: 17px; font-weight: 800; color: #FFFFFF !important; letter-spacing: -0.3px;
+}
+.topbar-logo-sub { font-size: 11px; color: #94A3B8 !important; }
+.topbar-menu { display: flex; gap: 4px; }
+.topbar-user {
+    color: #E2E8F0 !important; font-size: 13px;
+    background: #1E293B; padding: 6px 14px; border-radius: 8px;
 }
 /* Streamlit 기본 텍스트 색상 위계 */
 .stApp p, .stApp span, .stApp div { color: #475569; }
@@ -380,41 +413,8 @@ header {visibility: hidden;}
     border: 1px solid #E2E8F0;
     box-shadow: 0 2px 8px rgba(0,0,0,0.04);
 }
-/* [사이드바] 강제 펼침 — 어떤 상태로 들어와도 항상 보이게 (시연 안정성).
-   ※ 이전 시도에서 접기 버튼 selector를 잘못 잡아 사이드바가 통째로 사라지는 문제 발생 → 원복. */
-section[data-testid="stSidebar"] {
-    transform: none !important;
-    visibility: visible !important;
-    min-width: 244px !important;
-    width: 244px !important;
-    margin-left: 0 !important;
-}
-section[data-testid="stSidebar"] > div {
-    visibility: visible !important;
-}
-/* 접힌 상태에서 펼치는 버튼 — 안전망 (혹시 접혀도 또렷이 보이게) */
-[data-testid="stSidebarCollapsedControl"],
-[data-testid="collapsedControl"] {
-    visibility: visible !important;
-    opacity: 1 !important;
-    z-index: 999999 !important;
-    color: #0D9488 !important;
-    background: #FFFFFF !important;
-    border: 2px solid #0D9488 !important;
-    border-radius: 8px !important;
-    padding: 4px !important;
-}
-[data-testid="stSidebarCollapsedControl"] svg,
-[data-testid="collapsedControl"] svg {
-    color: #0D9488 !important;
-    fill: #0D9488 !important;
-}
-[data-testid="stSidebar"] { background-color: #0F1B2D !important; }
-[data-testid="stSidebar"] * { color: #E2E8F0 !important; }
-[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.1) !important; }
-[data-testid="stSidebar"] [role="radiogroup"] label[data-checked="true"] {
-    color: #0D9488 !important; font-weight: 700 !important;
-}
+/* [사이드바 비활성화] V2부터는 상단 메뉴바 사용 — 사이드바 자체를 숨김.
+   사이드바 컨트롤(개인화·필터·시스템 상태)은 본문 상단 expander로 이동됨. */
 [data-testid="stForm"] {
     background: #FFFFFF !important;
     border: 1px solid #E2E8F0 !important;
@@ -513,225 +513,7 @@ st.markdown("""<div style="background: linear-gradient(135deg, #0F1B2D 0%, #1E3A
 <p style="color: #94A3B8; margin: 8px 0 0 0; font-size: 16px; font-weight: 300;">규칙 기반 분석 + AI 보조지표 결합 &nbsp;|&nbsp; 팀 싹쓰리</p>
 </div>""", unsafe_allow_html=True)
 
-# ================================================================
-# 사이드바 — 페이지 네비게이션 + 필터 + 시스템 상태
-# ================================================================
-
-# ── 사이드바 로고/타이틀 ──
-st.sidebar.markdown("""<div style="text-align:center; padding: 16px 0 8px 0;">
-<span style="font-size: 36px;">📰</span>
-<h3 style="margin: 4px 0 0 0; font-weight: 700; letter-spacing: -0.3px;">SSAK3</h3>
-<p style="font-size: 12px; opacity: 0.6; margin: 0;">News Credibility Analyzer</p>
-</div>""", unsafe_allow_html=True)
-
-# ── Phase G — 로그인 상태 표시 + 로그아웃 ──
-_user = auth_user_info()
-if _user:
-    st.sidebar.markdown(
-        f"""<div style="text-align:center; padding: 8px 0; background: #0D9488; border-radius: 8px; margin: 0 0 8px 0;">
-<span style="color: white; font-weight: 600;">👤 {_user['username']}</span>
-</div>""",
-        unsafe_allow_html=True,
-    )
-    if st.sidebar.button("로그아웃", use_container_width=True):
-        auth_logout()
-        st.rerun()
-
-st.sidebar.markdown("---")
-
-# ── 페이지 네비게이션 ──
-# 회원만 "내 통계", "계정 설정" 페이지 노출
-_pages = ["🔗 분석하기", "📈 대시보드", "🏎️ 성능 측정"]
-if auth_user_info():
-    _pages += ["⚙️ 계정 설정"]
-page_mode = st.sidebar.radio(
-    "페이지 선택",
-    _pages,
-    label_visibility="collapsed"
-)
-st.sidebar.markdown("---")
-
-# ── 1) 등급 필터 ──
-st.sidebar.markdown("**🔍 등급 필터**")
-grade_filter = st.sidebar.radio(
-    "표시할 등급 선택",
-    ["전체", "신뢰 가능", "주의 필요", "의심 기사", "신뢰 낮음"],
-    label_visibility="collapsed"
-)
-
-st.sidebar.markdown("---")
-
-# ── 2) 날짜 범위 필터 ──
-st.sidebar.markdown("**📅 날짜 범위**")
-date_start = st.sidebar.date_input("시작일", value=None, key="date_start")
-date_end = st.sidebar.date_input("종료일", value=None, key="date_end")
-
-st.sidebar.markdown("---")
-
-# ── 3) 키워드 검색 ──
-st.sidebar.markdown("**🔎 키워드 검색**")
-keyword_search = st.sidebar.text_input(
-    "제목에서 검색",
-    placeholder="검색어 입력…",
-    label_visibility="collapsed"
-)
-
-st.sidebar.markdown("---")
-
-# ================================================================
-# 사용자화 패널 — 분야 프리셋(E4) + 가중치(E2) + 등급 임계치(E6)
-# ================================================================
-# 분석 결과의 raw 점수(content/provocative/source)는 DB에 저장된 그대로 두고,
-# 종합 점수와 등급만 사용자 설정에 따라 즉시 재계산.
-# 학계 기본값(45/35/20, 80/60/40)을 유지하면서 사용자 맞춤 모드 제공.
-st.sidebar.markdown("**🎚️ 분석 사용자화**")
-
-# ── 분야별 프리셋 (E4) — 도메인 적응 ──
-# 분야 특성을 반영하여 가중치와 임계치를 자동 전환:
-# - 정치: 출처 신뢰도 비중↑, 임계치 엄격 (가짜뉴스 영향력 큼)
-# - 경제: 본문 일치도 비중↑ (수치/사실 정확성 중요)
-# - 연예: 자극성 비중↑, 임계치 완화 (선정적 표현 빈도 높음 감안)
-# - 일반: 학계 기본값 (45/35/20, 80/60/40)
-PRESETS = {
-    "일반 (기본값)": {"w": (45, 35, 20), "th": (80, 60, 40)},
-    "정치 — 출처 엄격": {"w": (40, 30, 30), "th": (85, 65, 45)},
-    "경제 — 본문 정확성 중시": {"w": (50, 30, 20), "th": (80, 60, 40)},
-    "연예 — 자극성 비중↑": {"w": (35, 45, 20), "th": (75, 55, 35)},
-}
-preset_choice = st.sidebar.selectbox(
-    "분야 프리셋",
-    list(PRESETS.keys()),
-    index=0,
-    key="preset_choice",
-    help="분야별로 가중치와 등급 임계치가 자동 조정됩니다",
-)
-
-# 프리셋이 변경되면 세션 슬라이더 값을 일괄 갱신 (선택 즉시 반영)
-_p = PRESETS[preset_choice]
-if st.session_state.get("_active_preset") != preset_choice:
-    st.session_state["_active_preset"] = preset_choice
-    st.session_state["w_content"] = _p["w"][0]
-    st.session_state["w_prov"] = _p["w"][1]
-    st.session_state["w_source"] = _p["w"][2]
-    st.session_state["th_reliable"] = _p["th"][0]
-    st.session_state["th_caution"] = _p["th"][1]
-    st.session_state["th_suspect"] = _p["th"][2]
-
-with st.sidebar.expander("가중치 / 임계치 세부조정", expanded=False):
-    st.markdown("**가중치 (합계 100%)**")
-    w_content = st.slider("본문 일치도", 0, 100, _p["w"][0], step=5, key="w_content")
-    w_prov = st.slider("자극성 분석", 0, 100, _p["w"][1], step=5, key="w_prov")
-    w_source = st.slider("출처 신뢰도", 0, 100, _p["w"][2], step=5, key="w_source")
-
-    w_sum = w_content + w_prov + w_source
-    if w_sum != 100:
-        st.warning(f"⚠️ 가중치 합계 {w_sum}% (100%로 정규화하여 적용)")
-
-    st.markdown("**등급 임계치**")
-    th_reliable = st.slider("신뢰 가능 ≥", 60, 95, _p["th"][0], step=5, key="th_reliable")
-    th_caution = st.slider("주의 필요 ≥", 40, 75, _p["th"][1], step=5, key="th_caution")
-    th_suspect = st.slider("의심 기사 ≥", 20, 55, _p["th"][2], step=5, key="th_suspect")
-
-    if not (th_reliable > th_caution > th_suspect):
-        st.error("⚠️ 임계치는 신뢰 > 주의 > 의심 순으로 내려가야 합니다")
-
-    st.caption("프리셋 변경 시 자동 적용됩니다. 기본값 복원은 분야 프리셋을 '일반(기본값)'으로 선택하세요.")
-
-# 정규화된 사용자 가중치 (raw 점수 → 종합 점수 재계산용)
-_w_total = max(1, w_content + w_prov + w_source)
-USER_W_CONTENT = w_content / _w_total
-USER_W_PROV = w_prov / _w_total
-USER_W_SOURCE = w_source / _w_total
-USER_TH_RELIABLE = th_reliable
-USER_TH_CAUTION = th_caution
-USER_TH_SUSPECT = th_suspect
-
-
-def recompute_score(content, prov, source):
-    """사용자 가중치로 종합 점수 재계산"""
-    return round(
-        (content or 0) * USER_W_CONTENT
-        + (prov or 0) * USER_W_PROV
-        + (source or 0) * USER_W_SOURCE,
-        1,
-    )
-
-
-def recompute_grade(score):
-    """사용자 임계치로 등급 재판정"""
-    if score >= USER_TH_RELIABLE:
-        return "신뢰 가능"
-    elif score >= USER_TH_CAUTION:
-        return "주의 필요"
-    elif score >= USER_TH_SUSPECT:
-        return "의심 기사"
-    else:
-        return "신뢰 낮음"
-
-
-# 사용자화 모드 표시 (발표 멘트용 — 학계 기본값 + 분야 적응 + 사용자 미세조정)
-_is_default = (
-    preset_choice == "일반 (기본값)"
-    and w_content == 45 and w_prov == 35 and w_source == 20
-    and th_reliable == 80 and th_caution == 60 and th_suspect == 40
-)
-if not _is_default:
-    st.sidebar.success(
-        f"🎚️ 사용자화 모드 [{preset_choice.split(' —')[0]}] — "
-        f"가중치 {w_content}/{w_prov}/{w_source} · "
-        f"임계치 {th_reliable}/{th_caution}/{th_suspect}"
-    )
-else:
-    st.sidebar.caption("학계 기본값(45/35/20, 80/60/40)으로 분석 표시 중")
-
-# ── 사용자 프로필 (E1, 경량) — 분석 이력 라벨링 ──
-# 실제 인증 시스템 대신, 발표용 가벼운 "프로필 이름" 라벨링.
-# 분석 요청 시 user_label로 함께 전송되어 DB에 저장 → 본인 분석만 필터 가능.
-# 향후 OAuth/JWT 기반 정식 로그인으로 확장 가능한 구조.
-with st.sidebar.expander("👤 프로필 (분석 이력 라벨)", expanded=False):
-    user_label = st.text_input(
-        "프로필 이름",
-        value=st.session_state.get("user_label", ""),
-        placeholder="예: 명호 / 익명 비워두기",
-        key="user_label",
-        help="입력 시 분석 결과에 라벨이 함께 저장되어 본인 분석만 필터할 수 있습니다",
-    )
-    only_mine = st.checkbox(
-        "내 분석만 보기",
-        value=False,
-        disabled=not user_label,
-        help="프로필 이름이 입력되어야 활성화됩니다",
-    )
-
-USER_LABEL = (user_label or "").strip()
-ONLY_MINE = only_mine and bool(USER_LABEL)
-
-# ── 사용자 자극성 사전 (E3) — 추가/면제 단어 ──
-# 시스템 기본 사전(과장/혐오/선정/공포 4카테고리) 외에 사용자가 도메인 특화
-# 단어를 추가하거나 일반 사전 중 일부를 면제 처리할 수 있음.
-# 결과 카드의 자극성 근거 섹션에서 시각적으로 강조 표시.
-with st.sidebar.expander("📝 사용자 자극성 사전", expanded=False):
-    user_extra = st.text_area(
-        "추가 단어 (콤마로 구분)",
-        value=st.session_state.get("user_extra", ""),
-        placeholder="예: 폭락, 패닉셀, 떡상",
-        key="user_extra",
-        height=68,
-        help="본문/제목에 등장하면 자극성 근거에 추가로 표시됩니다",
-    )
-    user_exempt = st.text_area(
-        "면제 단어 (콤마로 구분)",
-        value=st.session_state.get("user_exempt", ""),
-        placeholder="예: 충격, 경고",
-        key="user_exempt",
-        height=68,
-        help="시스템 사전에서 검출되더라도 면제 처리하여 강조에서 제외됩니다",
-    )
-
-USER_EXTRA_WORDS = [w.strip() for w in (user_extra or "").split(",") if w.strip()]
-USER_EXEMPT_WORDS = [w.strip() for w in (user_exempt or "").split(",") if w.strip()]
-
-st.sidebar.markdown("---")
+# (사이드바 컨트롤은 본문 상단 expander로 이동됨 — render_topbar 다음 위치)
 
 # ================================================================
 # DB에서 분석 결과 로드
@@ -754,44 +536,283 @@ def load_data():
 
 df = load_data()
 
-# ── 사이드바 하단: 시스템 상태 ──
-st.sidebar.markdown("**⚙️ 시스템 상태**")
-total_count = len(df) if not df.empty else 0
-done_count = len(df[df['status'] == 'done']) if not df.empty else 0
-failed_count = len(df[df['status'] == 'failed']) if not df.empty else 0
-st.sidebar.markdown(f"""<div style="font-size: 13px; line-height: 2;">
-📊 총 분석 건수: <b>{total_count}건</b><br>
-✅ 성공: <b>{done_count}건</b><br>
-❌ 실패: <b>{failed_count}건</b>
+# ================================================================
+# [V2 UI] 상단 헤더 메뉴 (사이드바 대체) — 페이지 전환 + 사용자 정보
+# ================================================================
+def render_topbar():
+    _u = auth_user_info()
+    _username = _u['username'] if _u else 'Guest'
+    st.markdown(f"""<div class="topbar">
+<div class="topbar-logo">
+<div class="topbar-logo-icon">📰</div>
+<div><div class="topbar-logo-text">SSAK3</div><div class="topbar-logo-sub">News Credibility Analyzer</div></div>
+</div>
+<div class="topbar-user">👤 {_username}</div>
 </div>""", unsafe_allow_html=True)
 
-# ── 사이드바: 캐시 적중률 (논문 abstract "캐싱 최적화" 효과) ──
-# 가장 최근 분석 결과의 cache_stats 스냅샷을 사이드바에 표시.
-# 발표 시연 시 캐시 효과를 정량적으로 보여줄 수 있다.
-if not df.empty and 'cache_stats' in df.columns:
-    latest_cache = None
-    for _, row in df.iterrows():
-        cs_raw = row.get('cache_stats')
-        if cs_raw:
-            try:
-                latest_cache = json.loads(cs_raw)
-                break
-            except Exception:
-                continue
-    if latest_cache:
-        nli = latest_cache.get('nli', {})
-        sent = latest_cache.get('sentiment', {})
-        src = latest_cache.get('source', {})
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("**⚡ 캐시 적중률**")
-        st.sidebar.markdown(f"""<div style="font-size: 12px; line-height: 1.8;">
-🧠 NLI: <b>{nli.get('hit_rate_pct', 0)}%</b> ({nli.get('hits',0)}/{nli.get('hits',0)+nli.get('misses',0)})<br>
-💬 감성: <b>{sent.get('hit_rate_pct', 0)}%</b> ({sent.get('hits',0)}/{sent.get('hits',0)+sent.get('misses',0)})<br>
-🌐 출처: <b>{src.get('hit_rate_pct', 0)}%</b> ({src.get('hits',0)}/{src.get('hits',0)+src.get('misses',0)})
-</div>
-<div style="font-size: 10px; color: #94A3B8; margin-top: 4px;">
-최근 처리 Worker 기준 / 컨테이너별 LRU 캐시
-</div>""", unsafe_allow_html=True)
+render_topbar()
+
+# 상단 메뉴 (페이지 전환) — 5컬럼 버튼
+_pages_avail = ["🔗 분석하기", "📈 대시보드", "🏎️ 성능 측정"]
+if auth_user_info():
+    _pages_avail += ["⚙️ 계정 설정"]
+_pages_avail += ["🚪 로그아웃"]
+
+_current = st.session_state.get("page_mode", "🔗 분석하기")
+_menu_cols = st.columns(len(_pages_avail))
+for _c, _p in zip(_menu_cols, _pages_avail):
+    with _c:
+        _is_active = (_p == _current)
+        if st.button(_p, key=f"_menu_{_p}", use_container_width=True,
+                     type="primary" if _is_active else "secondary"):
+            if _p == "🚪 로그아웃":
+                auth_logout()
+                st.rerun()
+            else:
+                st.session_state["page_mode"] = _p
+                st.rerun()
+
+page_mode = st.session_state.get("page_mode", "🔗 분석하기")
+st.markdown("---")
+
+# ================================================================
+# [V2 UI] 본문 상단 expander — 분석 설정 · 필터 (이전 사이드바 컨트롤들)
+# ================================================================
+with st.expander("⚙️ 분석 설정 · 필터", expanded=False):
+    # ================================================================
+    # 사이드바 — 페이지 네비게이션 + 필터 + 시스템 상태
+    # ================================================================
+    
+    # ── 1) 등급 필터 ──
+    st.markdown("**🔍 등급 필터**")
+    grade_filter = st.radio(
+        "표시할 등급 선택",
+        ["전체", "신뢰 가능", "주의 필요", "의심 기사", "신뢰 낮음"],
+        label_visibility="collapsed"
+    )
+    
+    st.markdown("---")
+    
+    # ── 2) 날짜 범위 필터 ──
+    st.markdown("**📅 날짜 범위**")
+    date_start = st.date_input("시작일", value=None, key="date_start")
+    date_end = st.date_input("종료일", value=None, key="date_end")
+    
+    st.markdown("---")
+    
+    # ── 3) 키워드 검색 ──
+    st.markdown("**🔎 키워드 검색**")
+    keyword_search = st.text_input(
+        "제목에서 검색",
+        placeholder="검색어 입력…",
+        label_visibility="collapsed"
+    )
+    
+    st.markdown("---")
+    
+    # ================================================================
+    # 사용자화 패널 — 분야 프리셋(E4) + 가중치(E2) + 등급 임계치(E6)
+    # ================================================================
+    # 분석 결과의 raw 점수(content/provocative/source)는 DB에 저장된 그대로 두고,
+    # 종합 점수와 등급만 사용자 설정에 따라 즉시 재계산.
+    # 학계 기본값(45/35/20, 80/60/40)을 유지하면서 사용자 맞춤 모드 제공.
+    st.markdown("**🎚️ 분석 사용자화**")
+    
+    # ── 분야별 프리셋 (E4) — 도메인 적응 ──
+    # 분야 특성을 반영하여 가중치와 임계치를 자동 전환:
+    # - 정치: 출처 신뢰도 비중↑, 임계치 엄격 (가짜뉴스 영향력 큼)
+    # - 경제: 본문 일치도 비중↑ (수치/사실 정확성 중요)
+    # - 연예: 자극성 비중↑, 임계치 완화 (선정적 표현 빈도 높음 감안)
+    # - 일반: 학계 기본값 (45/35/20, 80/60/40)
+    PRESETS = {
+        "일반 (기본값)": {"w": (45, 35, 20), "th": (80, 60, 40)},
+        "정치 — 출처 엄격": {"w": (40, 30, 30), "th": (85, 65, 45)},
+        "경제 — 본문 정확성 중시": {"w": (50, 30, 20), "th": (80, 60, 40)},
+        "연예 — 자극성 비중↑": {"w": (35, 45, 20), "th": (75, 55, 35)},
+    }
+    preset_choice = st.selectbox(
+        "분야 프리셋",
+        list(PRESETS.keys()),
+        index=0,
+        key="preset_choice",
+        help="분야별로 가중치와 등급 임계치가 자동 조정됩니다",
+    )
+    
+    # 프리셋이 변경되면 세션 슬라이더 값을 일괄 갱신 (선택 즉시 반영)
+    _p = PRESETS[preset_choice]
+    if st.session_state.get("_active_preset") != preset_choice:
+        st.session_state["_active_preset"] = preset_choice
+        st.session_state["w_content"] = _p["w"][0]
+        st.session_state["w_prov"] = _p["w"][1]
+        st.session_state["w_source"] = _p["w"][2]
+        st.session_state["th_reliable"] = _p["th"][0]
+        st.session_state["th_caution"] = _p["th"][1]
+        st.session_state["th_suspect"] = _p["th"][2]
+    
+    with st.expander("가중치 / 임계치 세부조정", expanded=False):
+        st.markdown("**가중치 (합계 100%)**")
+        w_content = st.slider("본문 일치도", 0, 100, _p["w"][0], step=5, key="w_content")
+        w_prov = st.slider("자극성 분석", 0, 100, _p["w"][1], step=5, key="w_prov")
+        w_source = st.slider("출처 신뢰도", 0, 100, _p["w"][2], step=5, key="w_source")
+    
+        w_sum = w_content + w_prov + w_source
+        if w_sum != 100:
+            st.warning(f"⚠️ 가중치 합계 {w_sum}% (100%로 정규화하여 적용)")
+    
+        st.markdown("**등급 임계치**")
+        th_reliable = st.slider("신뢰 가능 ≥", 60, 95, _p["th"][0], step=5, key="th_reliable")
+        th_caution = st.slider("주의 필요 ≥", 40, 75, _p["th"][1], step=5, key="th_caution")
+        th_suspect = st.slider("의심 기사 ≥", 20, 55, _p["th"][2], step=5, key="th_suspect")
+    
+        if not (th_reliable > th_caution > th_suspect):
+            st.error("⚠️ 임계치는 신뢰 > 주의 > 의심 순으로 내려가야 합니다")
+    
+        st.caption("프리셋 변경 시 자동 적용됩니다. 기본값 복원은 분야 프리셋을 '일반(기본값)'으로 선택하세요.")
+    
+    # 정규화된 사용자 가중치 (raw 점수 → 종합 점수 재계산용)
+    _w_total = max(1, w_content + w_prov + w_source)
+    USER_W_CONTENT = w_content / _w_total
+    USER_W_PROV = w_prov / _w_total
+    USER_W_SOURCE = w_source / _w_total
+    USER_TH_RELIABLE = th_reliable
+    USER_TH_CAUTION = th_caution
+    USER_TH_SUSPECT = th_suspect
+    
+    
+    def recompute_score(content, prov, source):
+        """사용자 가중치로 종합 점수 재계산"""
+        return round(
+            (content or 0) * USER_W_CONTENT
+            + (prov or 0) * USER_W_PROV
+            + (source or 0) * USER_W_SOURCE,
+            1,
+        )
+    
+    
+    def recompute_grade(score):
+        """사용자 임계치로 등급 재판정"""
+        if score >= USER_TH_RELIABLE:
+            return "신뢰 가능"
+        elif score >= USER_TH_CAUTION:
+            return "주의 필요"
+        elif score >= USER_TH_SUSPECT:
+            return "의심 기사"
+        else:
+            return "신뢰 낮음"
+    
+    
+    # 사용자화 모드 표시 (발표 멘트용 — 학계 기본값 + 분야 적응 + 사용자 미세조정)
+    _is_default = (
+        preset_choice == "일반 (기본값)"
+        and w_content == 45 and w_prov == 35 and w_source == 20
+        and th_reliable == 80 and th_caution == 60 and th_suspect == 40
+    )
+    if not _is_default:
+        st.success(
+            f"🎚️ 사용자화 모드 [{preset_choice.split(' —')[0]}] — "
+            f"가중치 {w_content}/{w_prov}/{w_source} · "
+            f"임계치 {th_reliable}/{th_caution}/{th_suspect}"
+        )
+    else:
+        st.caption("학계 기본값(45/35/20, 80/60/40)으로 분석 표시 중")
+    
+    # ── 사용자 프로필 (E1, 경량) — 분석 이력 라벨링 ──
+    # 실제 인증 시스템 대신, 발표용 가벼운 "프로필 이름" 라벨링.
+    # 분석 요청 시 user_label로 함께 전송되어 DB에 저장 → 본인 분석만 필터 가능.
+    # 향후 OAuth/JWT 기반 정식 로그인으로 확장 가능한 구조.
+    with st.expander("👤 프로필 (분석 이력 라벨)", expanded=False):
+        user_label = st.text_input(
+            "프로필 이름",
+            value=st.session_state.get("user_label", ""),
+            placeholder="예: 명호 / 익명 비워두기",
+            key="user_label",
+            help="입력 시 분석 결과에 라벨이 함께 저장되어 본인 분석만 필터할 수 있습니다",
+        )
+        only_mine = st.checkbox(
+            "내 분석만 보기",
+            value=False,
+            disabled=not user_label,
+            help="프로필 이름이 입력되어야 활성화됩니다",
+        )
+    
+    USER_LABEL = (user_label or "").strip()
+    ONLY_MINE = only_mine and bool(USER_LABEL)
+    
+    # ── 사용자 자극성 사전 (E3) — 추가/면제 단어 ──
+    # 시스템 기본 사전(과장/혐오/선정/공포 4카테고리) 외에 사용자가 도메인 특화
+    # 단어를 추가하거나 일반 사전 중 일부를 면제 처리할 수 있음.
+    # 결과 카드의 자극성 근거 섹션에서 시각적으로 강조 표시.
+    with st.expander("📝 사용자 자극성 사전", expanded=False):
+        user_extra = st.text_area(
+            "추가 단어 (콤마로 구분)",
+            value=st.session_state.get("user_extra", ""),
+            placeholder="예: 폭락, 패닉셀, 떡상",
+            key="user_extra",
+            height=68,
+            help="본문/제목에 등장하면 자극성 근거에 추가로 표시됩니다",
+        )
+        user_exempt = st.text_area(
+            "면제 단어 (콤마로 구분)",
+            value=st.session_state.get("user_exempt", ""),
+            placeholder="예: 충격, 경고",
+            key="user_exempt",
+            height=68,
+            help="시스템 사전에서 검출되더라도 면제 처리하여 강조에서 제외됩니다",
+        )
+    
+    USER_EXTRA_WORDS = [w.strip() for w in (user_extra or "").split(",") if w.strip()]
+    USER_EXEMPT_WORDS = [w.strip() for w in (user_exempt or "").split(",") if w.strip()]
+    
+    st.markdown("---")
+    
+    
+
+# 시스템 상태/캐시 적중률 (이전 사이드바 하단)
+with st.expander("⚙️ 시스템 상태 · 캐시 적중률", expanded=False):
+    # ── 사이드바 하단: 시스템 상태 ──
+    st.markdown("**⚙️ 시스템 상태**")
+    total_count = len(df) if not df.empty else 0
+    done_count = len(df[df['status'] == 'done']) if not df.empty else 0
+    failed_count = len(df[df['status'] == 'failed']) if not df.empty else 0
+    st.markdown(f"""<div style="font-size: 13px; line-height: 2;">
+    📊 총 분석 건수: <b>{total_count}건</b><br>
+    ✅ 성공: <b>{done_count}건</b><br>
+    ❌ 실패: <b>{failed_count}건</b>
+    </div>""", unsafe_allow_html=True)
+    
+    # ── 사이드바: 캐시 적중률 (논문 abstract "캐싱 최적화" 효과) ──
+    # 가장 최근 분석 결과의 cache_stats 스냅샷을 사이드바에 표시.
+    # 발표 시연 시 캐시 효과를 정량적으로 보여줄 수 있다.
+    if not df.empty and 'cache_stats' in df.columns:
+        latest_cache = None
+        for _, row in df.iterrows():
+            cs_raw = row.get('cache_stats')
+            if cs_raw:
+                try:
+                    latest_cache = json.loads(cs_raw)
+                    break
+                except Exception:
+                    continue
+        if latest_cache:
+            nli = latest_cache.get('nli', {})
+            sent = latest_cache.get('sentiment', {})
+            src = latest_cache.get('source', {})
+            st.markdown("---")
+            st.markdown("**⚡ 캐시 적중률**")
+            st.markdown(f"""<div style="font-size: 12px; line-height: 1.8;">
+    🧠 NLI: <b>{nli.get('hit_rate_pct', 0)}%</b> ({nli.get('hits',0)}/{nli.get('hits',0)+nli.get('misses',0)})<br>
+    💬 감성: <b>{sent.get('hit_rate_pct', 0)}%</b> ({sent.get('hits',0)}/{sent.get('hits',0)+sent.get('misses',0)})<br>
+    🌐 출처: <b>{src.get('hit_rate_pct', 0)}%</b> ({src.get('hits',0)}/{src.get('hits',0)+src.get('misses',0)})
+    </div>
+    <div style="font-size: 10px; color: #94A3B8; margin-top: 4px;">
+    최근 처리 Worker 기준 / 컨테이너별 LRU 캐시
+    </div>""", unsafe_allow_html=True)
+    
+    
+
+st.markdown("---")
+
+# (사이드바 시스템 상태는 본문 우측/하단으로 이동됨)
 
 # ================================================================
 # 성능 측정 페이지 — 벤치마크 결과 시각화
