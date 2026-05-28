@@ -307,20 +307,24 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: hidden;}
-/* [사이드바] 접기 버튼(>)만 숨겨 시연 중 실수로 접는 일을 차단.
-   펼치기 버튼(접힌 상태에서 여는 버튼)은 반드시 보이게 유지 → 접혀도 복구 가능. */
-[data-testid="stSidebarCollapseButton"] {
-    display: none !important;
+/* [사이드바] 강제 펼침 — 어떤 상태로 들어와도 항상 보이게 (시연 안정성).
+   ※ 이전 시도에서 접기 버튼 selector를 잘못 잡아 사이드바가 통째로 사라지는 문제 발생 → 원복. */
+section[data-testid="stSidebar"] {
+    transform: none !important;
+    visibility: visible !important;
+    min-width: 244px !important;
+    width: 244px !important;
+    margin-left: 0 !important;
 }
-/* 펼치기 버튼(접힌 상태에서 사이드바 여는 버튼) — header를 숨겨도 항상 또렷하게 노출 */
+section[data-testid="stSidebar"] > div {
+    visibility: visible !important;
+}
+/* 접힌 상태에서 펼치는 버튼 — 안전망 (혹시 접혀도 또렷이 보이게) */
 [data-testid="stSidebarCollapsedControl"],
 [data-testid="collapsedControl"] {
-    display: flex !important;
     visibility: visible !important;
     opacity: 1 !important;
     z-index: 999999 !important;
-    top: 12px !important;
-    left: 12px !important;
     color: #0D9488 !important;
     background: #FFFFFF !important;
     border: 2px solid #0D9488 !important;
@@ -331,8 +335,6 @@ header {visibility: hidden;}
 [data-testid="collapsedControl"] svg {
     color: #0D9488 !important;
     fill: #0D9488 !important;
-    width: 24px !important;
-    height: 24px !important;
 }
 [data-testid="stSidebar"] { background-color: #0F1B2D !important; }
 [data-testid="stSidebar"] * { color: #E2E8F0 !important; }
