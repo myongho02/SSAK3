@@ -330,15 +330,17 @@ section[data-testid="stSidebar"] { display: none !important; }
 [data-testid="stToolbar"] { display: none !important; }
 
 /* PPT 슬라이드 2 — 흰 헤더 한 줄 (로고 + 메뉴 + 사용자) — 순수 HTML/CSS
-   sticky로 스크롤해도 항상 상단 고정 */
+   position:fixed로 브라우저 창 상단에 완전 고정 (스크롤 영향 0) */
 .topbar-merged {
     background: #FFFFFF;
-    margin: 0 -32px 32px -32px;
     border-bottom: 1px solid #E2E8F0;
-    box-shadow: 0 1px 3px rgba(15,23,42,0.03);
-    position: sticky;
+    box-shadow: 0 1px 3px rgba(15,23,42,0.05);
+    position: fixed !important;
     top: 0;
-    z-index: 999;
+    left: 0;
+    right: 0;
+    z-index: 999999;
+    margin: 0 !important;
 }
 .topbar-content {
     display: flex;
@@ -346,7 +348,15 @@ section[data-testid="stSidebar"] { display: none !important; }
     justify-content: space-between;
     padding: 14px 40px;
     gap: 24px;
+    max-width: 1280px;
+    margin: 0 auto;
 }
+/* 본문 컨테이너에 헤더 높이만큼 padding-top — 본문이 헤더에 가려지지 않게 */
+.main .block-container {
+    padding-top: 90px !important;
+}
+/* Streamlit 기본 header 영역 자체를 0 높이로 (회색 띠 제거) */
+[data-testid="stHeader"] { height: 0 !important; min-height: 0 !important; }
 .topbar-logo { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .topbar-logo-icon {
     background: #0D9488; width: 36px; height: 36px;
