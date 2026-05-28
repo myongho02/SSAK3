@@ -1693,15 +1693,20 @@ else:
             mt = safe(fact_data.get('matched_title', ''))[:80]
             mu = safe(fact_data.get('matched_url', ''))
             has_false = fact_data.get('has_false_signal', False)
-            if has_false:
-                bg, border, icon, label = "#FEE2E2", "#DC2626", "🚨", "거짓 판정 사례와 유사"
+            # 신뢰가능 등급에선 거짓신호 박스 숨김 (정상 기사 vs 거짓 사례 매칭은 의미 약함)
+            _is_reliable = grade == "신뢰 가능"
+            if _is_reliable and has_false:
+                pass  # 표시 안 함
             else:
-                bg, border, icon, label = "#FEF3C7", "#D97706", "🔍", "팩트체크 검증 대상 주제와 유사"
-            fact_html = f"""<div class="evidence-section" style="background:{bg};border-left:4px solid {border};">
-<div class="evidence-title">{icon} 외부 팩트체크 보조 신호</div>
-<div class="evidence-row"><b>{label}</b> — 유사도 <b>{sim_pct:.0f}%</b></div>
-<div class="evidence-row" style="font-size:12px;color:#4B5563;">참고 케이스: <a href="{mu}" target="_blank" style="color:#1D4ED8;text-decoration:underline;">{mt}</a></div>
-<div class="evidence-row" style="font-size:11px;color:#6B7280;">※ 점수에 합산되지 않는 별도 신호입니다.</div>
+                if has_false:
+                    bg, border, icon, label = "#FEE2E2", "#DC2626", "🚨", "거짓 판정 사례와 유사"
+                else:
+                    bg, border, icon, label = "#FEF3C7", "#D97706", "🔍", "팩트체크 검증 대상 주제와 유사"
+                # 카드 상단 강조 박스 (영상 가시성↑) — 큰 폰트 + 굵은 테두리
+                fact_html = f"""<div style="background:{bg};border:2px solid {border};border-radius:8px;padding:12px 18px;margin:14px 0 6px 0;">
+<div style="font-size:15px;font-weight:700;color:#1F2937;margin-bottom:6px;">{icon} 외부 팩트체크 보조 신호 — {label}</div>
+<div style="font-size:14px;color:#374151;margin-bottom:4px;">유사도 <b style="color:{border};font-size:16px;">{sim_pct:.0f}%</b> · 참고 케이스: <a href="{mu}" target="_blank" style="color:#1D4ED8;text-decoration:underline;">{mt}</a></div>
+<div style="font-size:11px;color:#6B7280;">※ 점수에 합산되지 않는 별도 신호 (사람 검증 + AI 분석 하이브리드)</div>
 </div>"""
 
         # ── 처리한 Worker 정보 표시용 ──
@@ -1723,6 +1728,7 @@ else:
 <div class="card-body">
 <div class="card-title">{_safe_title}</div>
 <div class="card-meta">{_safe_url}&nbsp;&nbsp;|&nbsp;&nbsp;{_safe_analyzed_at}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: {color};">{_safe_grade}</span>{_card_worker_html}</div>
+{fact_html}
 <div style="display: flex; gap: 32px; align-items: center; margin-top: 12px;">
 <div style="flex-shrink: 0; min-width: 130px;">
 {build_gauge_svg(score, grade, color)}</div>
@@ -1746,7 +1752,6 @@ else:
 {evidence1}
 {evidence2}
 {evidence3}
-{fact_html}
 <p style="margin: 16px 0 0 0; font-size: 13px; color: #64748B; line-height: 1.6;">{body_preview}</p>
 </div></div>"""
 

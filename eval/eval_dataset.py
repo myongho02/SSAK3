@@ -190,12 +190,148 @@ UNKNOWN_SOURCE_CASES = [
         ),
         "source_name": "익명매체",
     },
+    {
+        "id": "U2",
+        "category": "unknown_source",
+        "expected_grade": "주의 필요",
+        "title": "익명 블로그, 신약 효능 주장 게재",
+        "body": (
+            "한 블로그가 최근 신약의 효능을 강조하는 글을 게재했다. "
+            "글은 임상 데이터를 인용하면서도 출처를 명확히 밝히지 않았다. "
+            "의약 전문가는 \"공식 임상 자료 확인이 필요하다\"고 조언했다."
+        ),
+        "source_name": "익명블로그",
+    },
+    {
+        "id": "U3",
+        "category": "unknown_source",
+        "expected_grade": "주의 필요",
+        "title": "출처 불명 채널, 정치인 발언 인용 보도",
+        "body": (
+            "정치인 A씨의 인터뷰 일부가 출처 불명 채널을 통해 확산됐다. "
+            "원본 영상 확인이 어려워 정확한 발언 맥락을 파악하기 힘들다는 지적이 나온다. "
+            "정치인 측은 \"맥락이 왜곡됐다\"는 입장을 밝혔다."
+        ),
+        "source_name": "출처미상채널",
+    },
+]
+
+
+# ========== E. 추가 정상 기사 (분야 다양화 — 문화/IT/생활) ==========
+EXTRA_NORMAL_CASES = [
+    {
+        "id": "N6",
+        "category": "normal",
+        "expected_grade": "신뢰 가능",
+        "title": "국립중앙박물관, 청동기 시대 특별전 개최",
+        "body": (
+            "국립중앙박물관은 다음 달 1일부터 청동기 시대를 주제로 한 특별전을 개최한다고 밝혔다. "
+            "이번 전시에는 최근 발굴된 유물 200여 점이 처음 공개되며, "
+            "전문 학예사의 해설 프로그램도 함께 운영된다. "
+            "관람은 무료이며 사전 예약을 통해 누구나 참여할 수 있다."
+        ),
+        "source_name": "연합뉴스",
+    },
+    {
+        "id": "N7",
+        "category": "normal",
+        "expected_grade": "신뢰 가능",
+        "title": "국내 AI 스타트업, 자체 LLM 모델 공개",
+        "body": (
+            "국내 AI 스타트업이 자체 개발한 한국어 특화 거대언어모델(LLM)을 28일 공개했다. "
+            "회사 관계자는 \"한국어 자연어 이해 성능이 글로벌 모델 대비 우수하다\"고 밝혔다. "
+            "모델은 오픈소스로 공개되어 학계와 산업계의 자유로운 활용이 가능하다."
+        ),
+        "source_name": "ZDNet 코리아",
+    },
+    {
+        "id": "N8",
+        "category": "normal",
+        "expected_grade": "신뢰 가능",
+        "title": "서울 지하철 9호선, 30일부터 정상 운행",
+        "body": (
+            "서울교통공사는 점검 작업이 완료된 9호선 일부 구간의 정상 운행을 30일 0시부터 재개한다고 밝혔다. "
+            "지난 한 주간 운행 지연이 발생했던 일부 시간대 열차 편성도 평소 수준으로 회복된다."
+        ),
+        "source_name": "연합뉴스",
+    },
+]
+
+
+# ========== F. 추가 자극성 의심 기사 ==========
+EXTRA_SENSATIONAL_CASES = [
+    {
+        "id": "S4",
+        "category": "sensational",
+        "expected_grade": "의심 기사",
+        "title": "충격! 유명 셀럽 A씨, 사기 의혹에 입을 닫다…경악",
+        "body": (
+            "유명 셀럽 A씨가 최근 사기 의혹에 휘말렸다. "
+            "충격적인 폭로가 잇따르며 팬들은 경악을 금치 못하고 있다. "
+            "A씨 측은 \"사실무근\"이라며 법적 대응을 예고했다."
+        ),
+        "source_name": "출처 불명",
+    },
+    {
+        "id": "S5",
+        "category": "sensational",
+        "expected_grade": "의심 기사",
+        "title": "단독! 정치권 인사 비밀 회동 포착…경악스러운 진실",
+        "body": (
+            "정치권 핵심 인사들의 비밀 회동이 한 매체의 단독 보도로 드러났다. "
+            "회동 장소와 시각이 구체적으로 공개되며 큰 충격을 안기고 있다. "
+            "당사자들은 \"단순 의견 교환이었다\"고 해명했다."
+        ),
+        "source_name": "익명매체",
+    },
+    {
+        "id": "S6",
+        "category": "sensational",
+        "expected_grade": "주의 필요",
+        "title": "방심하면 큰일! 봄철 식중독, 의외의 음식에 주의해야",
+        "body": (
+            "봄철 식중독 위험이 높아지고 있다. 식약처는 \"실온 보관 식품 섭취에 각별히 유의해야 한다\"고 당부했다. "
+            "특히 도시락이나 김밥 등 즉석식품의 보관 시간이 길어질수록 위험이 증가한다."
+        ),
+        "source_name": "연합뉴스",
+    },
+]
+
+
+# ========== G. 추가 불일치(낚시성) 케이스 ==========
+EXTRA_MISMATCH_CASES = [
+    {
+        "id": "M4",
+        "category": "mismatch",
+        "expected_grade": "의심 기사",
+        "title": "삼성전자 회장, 모든 사업 정리 선언",
+        "body": (
+            "오늘 서울 강남구 일대에 가벼운 봄비가 내렸다. "
+            "기상청은 주말 동안 흐린 날씨가 이어질 것이라고 예보했다. "
+            "주말 외출 시 우산 챙기는 것을 권장한다."
+        ),
+        "source_name": "익명매체",
+    },
+    {
+        "id": "M5",
+        "category": "mismatch",
+        "expected_grade": "의심 기사",
+        "title": "한국은행, 기준금리 5%p 전격 인상",
+        "body": (
+            "최근 서울 시내 공원에서는 시민들이 산책을 즐기는 모습이 흔히 보인다. "
+            "벚꽃이 만개하면서 가족 단위 방문객이 늘어나고 있다."
+        ),
+        "source_name": "익명매체",
+    },
 ]
 
 
 def all_cases():
     """전체 케이스를 순서대로 반환."""
-    return NORMAL_CASES + SENSATIONAL_CASES + MISMATCH_CASES + UNKNOWN_SOURCE_CASES
+    return (NORMAL_CASES + EXTRA_NORMAL_CASES +
+            SENSATIONAL_CASES + EXTRA_SENSATIONAL_CASES +
+            MISMATCH_CASES + EXTRA_MISMATCH_CASES +
+            UNKNOWN_SOURCE_CASES)
 
 
 def cases_by_category(category):

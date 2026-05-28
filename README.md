@@ -1,9 +1,70 @@
-# SSAK3 - 뉴스 신뢰도 점수화 시스템
+# PRISM (SSAK3) — 뉴스 신뢰도 점수화 분산 처리 시스템
 
-뉴스 기사의 URL을 입력하면, **규칙 기반 분석과 AI 보조지표를 결합**하여 뉴스 신뢰도를 점수화하는 분산 처리 시스템입니다.
+**Pipeline-based Reliability Index Scoring Model** — RabbitMQ + Docker 기반 비동기 분산 처리로 뉴스 기사의 신뢰도를 정량화하는 시스템입니다. 본문 일치도·자극성·출처 신뢰도 **3대 지표**를 가중합해 0~100점 점수 + 4단계 등급 + XAI 분석 근거를 제공합니다.
 
-> **주의:** 이 시스템은 뉴스의 진위(참/거짓)를 판별하는 것이 아닙니다.  
-> 기사의 형식적 신뢰도(제목-본문 일치도, 자극적 표현 정도, 출처 공신력)를 정량화하여 점수로 제공합니다.
+> KIIT 2026 하계 종합학술대회 발표 — 경기대학교 AI 컴퓨터공학부 팀 싹쓰리
+
+---
+
+## ⚡ 5초 실행 (GHCR 이미지 — 빌드 없이 즉시 사용)
+
+```bash
+git clone https://github.com/myongho02/SSAK3.git
+cd SSAK3
+docker compose up -d         # 컨테이너 6개 가동 (rabbitmq · api · dashboard · worker × 3)
+python3 demo_seed.py         # 시연 데이터 7건 사전 시드
+open http://localhost:8501   # 대시보드 진입
+```
+
+**최신 이미지 (public)**: `ghcr.io/myongho02/ssak3-api:latest`, `ssak3-dashboard:latest`, `ssak3-worker:latest`
+
+---
+
+## 📊 실험 결과 핵심 (1,000건 실측)
+
+| 항목 | 결과 |
+|---|---|
+| **Worker 스케일링 (1→3개)** | 처리 시간 **38% 단축**, 처리량 60% 증가 (2.35 → 3.77 건/s) |
+| **Round-Robin 분배** | **33.9 / 33.0 / 33.1%** (편차 0.9%p) |
+| **시간당 처리량** | 약 **13,600건/시간** |
+| **K1 평가 정확도** | Loose **100%**, **'신뢰 가능' Precision 1.000** (정상 오분류 0건) |
+| **분야별 신뢰도** | 문화 77.7점 ~ 국제 70.0점 (7.7점 차) |
+| **재현성 (Cold/Warm 2회)** | 처리량 편차 **2.3%** |
+
+→ 상세: 발표 자료 슬라이드 8, `eval/results.json`, `eval/report.json`
+
+---
+
+## 🏗 시스템 구조
+
+```
+[사용자] → [Flask API] → [RabbitMQ 큐] → [Worker × 3 (Docker)] → [SQLite] → [Streamlit XAI]
+                              ↑                ↑
+                     비동기 분배         3대 지표 분석
+```
+
+| 구성요소 | 역할 |
+|---|---|
+| Flask API | 요청 검증 + 큐 등록 |
+| RabbitMQ | 메시지 큐 (Round-Robin 분배, prefetch=1, auto-retry) |
+| Worker × 3 | URL 크롤링 + NLI/감성/출처 분석 + DB 저장 |
+| SQLite | 사용자별 격리 저장 |
+| Streamlit | XAI 대시보드 (점수 + 근거 시각화) |
+
+---
+
+## 🛠 개발 환경 / 빌드
+
+```bash
+docker compose up -d --build      # 직접 빌드 (이미지 ~1.5GB)
+python3 -m pip install -r ...     # (선택) 로컬 Python 분석 도구
+```
+
+자세한 빌드·재현 가이드는 아래 본문 참조.
+
+---
+
+> **시스템 범위:** 본 시스템은 뉴스의 진위(참/거짓)를 판별하는 것이 아니라, 기사의 **형식적 신뢰도**(제목-본문 일치도, 자극적 표현 정도, 출처 공신력)를 정량화하는 의사결정 보조 도구입니다.
 
 ---
 
