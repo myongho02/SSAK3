@@ -467,9 +467,9 @@ st.sidebar.markdown("---")
 
 # ── 페이지 네비게이션 ──
 # 회원만 "내 통계", "계정 설정" 페이지 노출
-_pages = ["📊 분석 대시보드", "🏎️ 성능 측정"]
+_pages = ["🔗 분석하기", "📈 대시보드", "🏎️ 성능 측정"]
 if auth_user_info():
-    _pages += ["📈 내 통계", "⚙️ 계정 설정"]
+    _pages += ["⚙️ 계정 설정"]
 page_mode = st.sidebar.radio(
     "페이지 선택",
     _pages,
@@ -841,39 +841,132 @@ SSAK3 — 규칙 기반 분석 + AI 보조지표 결합 뉴스 신뢰도 점수�
 # ================================================================
 # H2-4 내 통계 페이지 — 회원 전용 (총/평균/등급 분포/도메인 TOP)
 # ================================================================
-if page_mode == "📈 내 통계":
-    st.markdown('<div class="section-title">📈 내 분석 통계</div>', unsafe_allow_html=True)
+if page_mode == "📈 대시보드":
+    # ─── PPT 슬라이드 4 디자인 — 대시보드 ───
     _u = auth_user_info()
-    st.caption(f"@{_u['username']} 님의 분석 이력 통계")
+    st.markdown(f"""<div style="margin:24px 0 8px 0;">
+<h1 style="font-size:28px;font-weight:800;color:#0F172A;margin:0;">📊 분석 대시보드</h1>
+<p style="font-size:13px;color:#64748B;margin:4px 0 0 0;">@{_u['username']} 님이 누적한 전체 분석 결과와 신뢰도 분포를 확인하세요</p>
+</div>""", unsafe_allow_html=True)
 
     _df = load_data()
     _df = _df[_df['status'] == 'done'] if not _df.empty else _df
 
     if _df.empty:
-        st.info("아직 분석한 기사가 없습니다. 메인 대시보드에서 URL을 분석해보세요.")
+        st.info("아직 분석한 기사가 없습니다. '🔗 분석하기'에서 URL을 분석해보세요.")
         st.stop()
 
-    # 통계 카드
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("총 분석 건수", f"{len(_df)}건")
-    c2.metric("평균 신뢰도", f"{_df['total_score'].mean():.1f}점")
-    c3.metric("신뢰 가능", f"{(_df['total_score'] >= 80).sum()}건")
-    c4.metric("의심/낮음", f"{(_df['total_score'] < 60).sum()}건")
+    # ─── KPI 4 카드 ───
+    _total = len(_df)
+    _avg = _df['total_score'].mean()
+    _reliable = (_df['total_score'] >= 80).sum()
+    _low = (_df['total_score'] < 40).sum()
+    _reliable_pct = (_reliable / _total * 100) if _total > 0 else 0
+    _low_pct = (_low / _total * 100) if _total > 0 else 0
+
+    st.markdown(f"""<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:16px 0 24px 0;">
+<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:18px 20px;">
+<div style="font-size:11px;color:#94A3B8;margin-bottom:4px;">📦 전체 분석 건수</div>
+<div style="font-size:28px;font-weight:800;color:#0F172A;">{_total}<span style="font-size:12px;color:#94A3B8;font-weight:400;"> 건</span></div>
+</div>
+<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:18px 20px;">
+<div style="font-size:11px;color:#94A3B8;margin-bottom:4px;">⭐ 평균 신뢰도 점수</div>
+<div style="font-size:28px;font-weight:800;color:#0D9488;">{_avg:.1f}<span style="font-size:12px;color:#94A3B8;font-weight:400;"> 점</span></div>
+</div>
+<div style="background:#FFFFFF;border:1px solid #10B981;border-radius:12px;padding:18px 20px;">
+<div style="font-size:11px;color:#10B981;margin-bottom:4px;">✓ 신뢰 가능 (80+)</div>
+<div style="font-size:28px;font-weight:800;color:#10B981;">{_reliable}<span style="font-size:14px;color:#94A3B8;font-weight:400;"> 건 · {_reliable_pct:.1f}%</span></div>
+</div>
+<div style="background:#FFFFFF;border:1px solid #EF4444;border-radius:12px;padding:18px 20px;">
+<div style="font-size:11px;color:#EF4444;margin-bottom:4px;">⚠ 신뢰 낮음 (40-)</div>
+<div style="font-size:28px;font-weight:800;color:#EF4444;">{_low}<span style="font-size:14px;color:#94A3B8;font-weight:400;"> 건 · {_low_pct:.1f}%</span></div>
+</div>
+</div>""", unsafe_allow_html=True)
+
+    # ─── 좌: 일별 추이 막대 / 우: 등급별 분포 도넛 ───
+    col_left, col_right = st.columns([1.6, 1])
+
+    with col_left:
+        st.markdown("##### 📈 일별 분석 추이 (최근 7일)")
+        _df_recent = _df.copy()
+        _df_recent['date'] = pd.to_datetime(_df_recent['analyzed_at'], errors='coerce').dt.date
+        # 최근 7일
+        _today = pd.Timestamp.now().date()
+        _start = _today - pd.Timedelta(days=6)
+        _daily = _df_recent[_df_recent['date'] >= _start].groupby('date').size().reset_index(name='건수')
+        # 누락된 날짜 0으로 채움
+        _all_dates = pd.date_range(_start, _today).date
+        _daily = (pd.DataFrame({'date': _all_dates})
+                  .merge(_daily, on='date', how='left').fillna(0))
+        _daily['건수'] = _daily['건수'].astype(int)
+        _daily['날짜'] = _daily['date'].astype(str).str[5:]  # MM-DD
+        st.bar_chart(_daily.set_index('날짜')['건수'], height=240, color="#0D9488")
+
+    with col_right:
+        st.markdown("##### 🎯 등급별 분포")
+        _grade_counts = _df['grade'].value_counts()
+        _grade_order = ["신뢰 가능", "주의 필요", "의심 기사", "신뢰 낮음"]
+        _grade_colors_seg = ["#10B981", "#F59E0B", "#F97316", "#EF4444"]
+        _counts = [int(_grade_counts.get(g, 0)) for g in _grade_order]
+        _total_g = sum(_counts) or 1
+
+        # 도넛 SVG 직접 생성
+        _r = 70
+        _stroke = 22
+        _size = (_r + _stroke) * 2 + 20
+        _cx = _cy = (_r + _stroke) + 10
+        _C = 2 * 3.14159 * _r
+        _offset = 0
+        _seg_html = ""
+        for cnt, col in zip(_counts, _grade_colors_seg):
+            if cnt <= 0:
+                continue
+            _len = _C * cnt / _total_g
+            _gap = _C - _len
+            _seg_html += (
+                f'<circle cx="{_cx}" cy="{_cy}" r="{_r}" fill="none" stroke="{col}" '
+                f'stroke-width="{_stroke}" stroke-dasharray="{_len:.2f} {_gap:.2f}" '
+                f'stroke-dashoffset="{-_offset:.2f}" transform="rotate(-90 {_cx} {_cy})"/>'
+            )
+            _offset += _len
+
+        _legend = "".join(
+            f'<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#475569;margin:4px 0;">'
+            f'<span style="display:inline-block;width:12px;height:12px;background:{c};border-radius:2px;"></span>'
+            f'<b style="min-width:70px;">{g}</b><span style="color:#94A3B8;">{n}건 · {n/_total_g*100:.1f}%</span></div>'
+            for g, c, n in zip(_grade_order, _grade_colors_seg, _counts)
+        )
+
+        st.markdown(f"""<div style="display:flex;align-items:center;gap:20px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:16px;">
+<svg width="{_size}" height="{_size}" viewBox="0 0 {_size} {_size}" style="flex-shrink:0;">
+<circle cx="{_cx}" cy="{_cy}" r="{_r}" fill="none" stroke="#F1F5F9" stroke-width="{_stroke}"/>
+{_seg_html}
+<text x="{_cx}" y="{_cy + 4}" text-anchor="middle" font-size="24" font-weight="800" fill="#0F172A">{_total_g}</text>
+<text x="{_cx}" y="{_cy + 22}" text-anchor="middle" font-size="10" fill="#94A3B8">전체 건수</text>
+</svg>
+<div style="flex:1;">{_legend}</div>
+</div>""", unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # 도메인 TOP 10
-    st.markdown("### 자주 분석한 도메인 TOP 10")
-    from urllib.parse import urlparse as _up
-    _df_domain = _df.copy()
-    _df_domain['domain'] = _df_domain['url'].apply(
-        lambda u: _up(u).netloc.replace('www.', '') if isinstance(u, str) else '-'
-    )
-    _top = _df_domain['domain'].value_counts().head(10)
-    if not _top.empty:
-        st.bar_chart(_top)
-    else:
-        st.write("(데이터 부족)")
+    # ─── 최근 분석 결과 리스트 ───
+    st.markdown("##### 📋 최근 분석 결과 (최신순)")
+    _recent_list = _df.sort_values('analyzed_at', ascending=False).head(10)
+    for _, r in _recent_list.iterrows():
+        _sc = r['total_score']
+        _gr = r['grade']
+        _col = GRADE_COLORS.get(_gr, "#94A3B8")
+        _t = safe(str(r.get('title', ''))[:60])
+        _src = safe(str(r.get('source_name', '')).split('|')[0])
+        _when = safe(str(r.get('analyzed_at', ''))[5:16])
+        st.markdown(f"""<div style="display:flex;align-items:center;gap:14px;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:10px;padding:12px 16px;margin:6px 0;">
+<div style="background:{_col};color:#FFFFFF;font-size:18px;font-weight:800;padding:8px 12px;border-radius:8px;min-width:54px;text-align:center;">{_sc:.0f}</div>
+<div style="flex:1;min-width:0;">
+<div style="font-size:14px;font-weight:600;color:#0F172A;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{_t}</div>
+<div style="font-size:11px;color:#94A3B8;margin-top:2px;">{_src} · {_when} · 본문 {r.get('content_score',0):.0f} · 자극 {r.get('provocative_score',0):.0f} · 출처 {r.get('source_score',0):.0f}</div>
+</div>
+<div style="background:{_col}22;color:{_col};font-size:11px;font-weight:600;padding:4px 10px;border-radius:12px;">{_gr}</div>
+</div>""", unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -1096,41 +1189,66 @@ def get_indicator_color(score):
         return "#EF4444"   # 빨강
 
 def build_gauge_svg(score, grade, color):
-    """SVG 원형 게이지 HTML 생성 (stroke-dasharray 기반)"""
-    r = 50          # 반지름
-    stroke = 8      # 테두리 두께
+    """SVG 원형 게이지 — PPT UI 디자인 기반 (큰 사이즈 + 4단계 등급 탭).
+
+    PPT 슬라이드 3: 좌측 큰 원형 게이지에 "73 / 100점", 하단에 "주의 필요" 라벨,
+    그 아래 4단계 탭(낮음/의심/주의/신뢰)으로 어느 구간인지 표시."""
+    r = 78          # 반지름 (이전 50 → 78, 약 1.5배)
+    stroke = 12     # 테두리 두께
     size = (r + stroke) * 2
     cx = cy = r + stroke
     circumference = 2 * 3.14159 * r
     filled = circumference * score / 100
     gap = circumference - filled
-    return f"""<div class="gauge-wrap">
+    # 4단계 등급 탭 (현재 등급은 색상 강조)
+    grades = ["신뢰 낮음", "의심 기사", "주의 필요", "신뢰 가능"]
+    grade_colors = {"신뢰 낮음": "#EF4444", "의심 기사": "#F97316",
+                    "주의 필요": "#F59E0B", "신뢰 가능": "#10B981"}
+    tabs_html = "".join(
+        f'<span style="display:inline-block;padding:6px 12px;margin:2px;'
+        f'border-radius:6px;font-size:11px;font-weight:600;'
+        f'background:{grade_colors[g] if g==grade else "#F1F5F9"};'
+        f'color:{"#FFFFFF" if g==grade else "#94A3B8"};">{g}</span>'
+        for g in grades
+    )
+    return f"""<div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
 <svg width="{size}" height="{size}" viewBox="0 0 {size} {size}">
-<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#E2E8F0" stroke-width="{stroke}"/>
+<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#F1F5F9" stroke-width="{stroke}"/>
 <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" stroke-width="{stroke}"
  stroke-dasharray="{filled:.1f} {gap:.1f}" stroke-linecap="round"
  transform="rotate(-90 {cx} {cy})" style="transition: stroke-dasharray 0.6s ease;"/>
-<text x="{cx}" y="{cy - 4}" text-anchor="middle" class="gauge-score" fill="{color}">{score:.0f}</text>
-<text x="{cx}" y="{cy + 14}" text-anchor="middle" class="gauge-unit">/ 100</text>
+<text x="{cx}" y="{cy + 6}" text-anchor="middle" font-size="46" font-weight="800" fill="#0F172A">{score:.0f}</text>
+<text x="{cx}" y="{cy + 30}" text-anchor="middle" font-size="13" fill="#94A3B8">/ 100 점</text>
 </svg>
-<span class="gauge-grade" style="background:{color};">{grade}</span>
+<div style="display:flex;align-items:center;gap:8px;">
+<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{color};"></span>
+<span style="font-size:16px;font-weight:700;color:{color};">{grade}</span>
+</div>
+<div style="display:flex;flex-wrap:wrap;justify-content:center;max-width:200px;">{tabs_html}</div>
 </div>"""
 
 # ================================================================
-# URL 입력 영역 — st.container + CSS 선택자로 카드 스타일 적용
-# Streamlit은 별도 st.markdown의 열기/닫기 태그를 연결하지 않으므로
-# [data-testid="stForm"] CSS 선택자로 form에 직접 스타일을 적용한다.
+# [Phase 2 — PPT UI 디자인] 히어로 + 입력 카드 (단일/대량 탭) + 3카드 + 4 KPI
 # ================================================================
-with st.container():
-    st.markdown("**🔗 뉴스 기사 분석 요청**")
 
+# 히어로 섹션
+st.markdown("""<div style="text-align:center;margin:32px 0 8px 0;">
+<span style="display:inline-block;padding:6px 14px;background:rgba(13,148,136,0.1);border-radius:16px;color:#0D9488;font-size:12px;font-weight:600;">✨ AI 기반 뉴스 신뢰도 분석 · 분산 처리 엔진</span>
+</div>
+<h1 style="text-align:center;font-size:36px;font-weight:800;color:#0F172A;margin:8px 0;">수천 건의 뉴스를 <span style="color:#0D9488;">실시간으로</span> 검증합니다</h1>
+<p style="text-align:center;font-size:14px;color:#64748B;margin:0 0 24px 0;">URL 하나만 입력하면, 3가지 근거로 구성된 신뢰도 점수를 몇 초 안에 확인할 수 있어요.</p>""", unsafe_allow_html=True)
+
+# 입력 카드 (단일/대량 탭 전환)
+tab_single, tab_bulk = st.tabs(["🔗 단일 URL 분석", "📦 대량 분석 (최대 100건)"])
+
+with tab_single:
     with st.form("analyze_form"):
         url_input = st.text_input(
             "분석할 뉴스 URL을 입력하세요",
             placeholder="https://n.news.naver.com/mnews/article/...",
             label_visibility="collapsed"
         )
-        submitted = st.form_submit_button("🔍 분석 요청")
+        submitted = st.form_submit_button("🔍 분석 시작 →", use_container_width=False)
 
         if submitted:
             if not url_input or not url_input.startswith("http"):
@@ -1145,7 +1263,6 @@ with st.container():
                     )
                     if resp.status_code == 200:
                         result = resp.json()
-                        # API에서 "이미 분석된 기사" 응답이 오면 다른 메시지 표시
                         if "이미 분석된" in result.get("message", ""):
                             st.info("ℹ️ 이미 분석된 기사입니다. 아래에서 결과를 확인하세요.")
                         else:
@@ -1155,27 +1272,19 @@ with st.container():
                 except Exception as e:
                     st.error(f"API 서버 연결 실패: {e}")
 
-# ================================================================
-# 대량 분석 입력 영역 — 여러 URL을 줄바꿈으로 입력
-# ================================================================
-with st.container():
-    st.markdown("**📦 대량 뉴스 분석 요청**")
-
+with tab_bulk:
     with st.form("bulk_form"):
         bulk_input = st.text_area(
             "분석할 URL을 줄바꿈으로 입력하세요",
-            placeholder="https://n.news.naver.com/article/001/...\nhttps://n.news.naver.com/article/002/...\nhttps://n.news.naver.com/article/003/...",
-            height=150,
+            placeholder="https://n.news.naver.com/mnews/article/001/...\nhttps://n.news.naver.com/mnews/article/002/...\nhttps://n.news.naver.com/mnews/article/003/...",
+            height=160,
             label_visibility="collapsed"
         )
-        bulk_submitted = st.form_submit_button("📦 대량 분석 요청")
+        bulk_submitted = st.form_submit_button("📦 대량 분석 시작 →", use_container_width=False)
 
         if bulk_submitted:
-            # 줄바꿈으로 분리 후 빈 줄·공백 제거
             urls = [u.strip() for u in bulk_input.strip().splitlines() if u.strip()]
-            # http로 시작하는 유효한 URL만 필터링
             valid_urls = [u for u in urls if u.startswith("http")]
-
             if not valid_urls:
                 st.error("유효한 URL이 없습니다. http:// 또는 https://로 시작하는 URL을 입력해주세요.")
             else:
@@ -1198,6 +1307,62 @@ with st.container():
                         st.error(f"요청 실패: {resp.text}")
                 except Exception as e:
                     st.error(f"API 서버 연결 실패: {e}")
+
+# 3 안내 카드 (분산 / 3지표 / XAI)
+st.markdown("""<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:28px 0 16px 0;">
+<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:18px 20px;text-align:center;">
+<div style="font-size:28px;margin-bottom:6px;">⚡</div>
+<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">분산 병렬 처리</div>
+<div style="font-size:11px;color:#64748B;line-height:1.5;">RabbitMQ 메시지 큐 + 여러 Docker Worker로 대량 기사를 동시에 분석합니다.</div>
+</div>
+<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:18px 20px;text-align:center;">
+<div style="font-size:28px;margin-bottom:6px;">🎯</div>
+<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">3가지 평가 근거</div>
+<div style="font-size:11px;color:#64748B;line-height:1.5;">본문 일치도(45%) · 자극성(35%) · 출처 신뢰도(20%)를 가중 합산합니다.</div>
+</div>
+<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:18px 20px;text-align:center;">
+<div style="font-size:28px;margin-bottom:6px;">📊</div>
+<div style="font-size:14px;font-weight:700;color:#0F172A;margin-bottom:4px;">설명 가능한 결과</div>
+<div style="font-size:11px;color:#64748B;line-height:1.5;">점수만 보여주지 않고 \"왜 그런 점수\"인지 근거 키워드까지 함께 제시합니다.</div>
+</div>
+</div>""", unsafe_allow_html=True)
+
+# 4 실시간 시스템 KPI (오늘 분석 / 활성 Worker / 평균 분석 시간 / 처리 성공률)
+try:
+    _kpi_resp = requests.get(f"{API_URL}/jobs/summary", headers=auth_headers(), timeout=3).json()
+    _kpi_done = _kpi_resp.get('done', 0)
+    _kpi_failed = _kpi_resp.get('failed', 0)
+    _kpi_total_done = _kpi_done + _kpi_failed
+    _kpi_success = (_kpi_done / _kpi_total_done * 100) if _kpi_total_done > 0 else 0.0
+except Exception:
+    _kpi_done = 0
+    _kpi_success = 0.0
+
+# 평균 분석 시간 — 본인 분석 결과의 processing_time 평균
+try:
+    _df_proc = df[df['processing_time'].notna()] if not df.empty and 'processing_time' in df.columns else None
+    _kpi_avg_time = _df_proc['processing_time'].mean() if _df_proc is not None and len(_df_proc) > 0 else 0.0
+except Exception:
+    _kpi_avg_time = 0.0
+
+st.markdown(f"""<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:8px 0 24px 0;text-align:center;">
+<div style="background:#F8FAFC;border-radius:10px;padding:14px;">
+<div style="font-size:22px;font-weight:800;color:#0D9488;">{_kpi_done}<span style="font-size:11px;color:#94A3B8;font-weight:400;">건</span></div>
+<div style="font-size:11px;color:#64748B;">내 분석 기사</div>
+</div>
+<div style="background:#F8FAFC;border-radius:10px;padding:14px;">
+<div style="font-size:22px;font-weight:800;color:#0D9488;">3<span style="font-size:11px;color:#94A3B8;font-weight:400;">개</span></div>
+<div style="font-size:11px;color:#64748B;">활성 Worker</div>
+</div>
+<div style="background:#F8FAFC;border-radius:10px;padding:14px;">
+<div style="font-size:22px;font-weight:800;color:#0D9488;">{_kpi_avg_time:.1f}<span style="font-size:11px;color:#94A3B8;font-weight:400;">초</span></div>
+<div style="font-size:11px;color:#64748B;">평균 분석 시간</div>
+</div>
+<div style="background:#F8FAFC;border-radius:10px;padding:14px;">
+<div style="font-size:22px;font-weight:800;color:#0D9488;">{_kpi_success:.1f}<span style="font-size:11px;color:#94A3B8;font-weight:400;">%</span></div>
+<div style="font-size:11px;color:#64748B;">처리 성공률</div>
+</div>
+</div>""", unsafe_allow_html=True)
 
 # ── 대량 분석 진행 상황 표시 + 자동 새로고침 ──
 auto_refresh = st.checkbox("🔄 5초마다 자동 새로고침", value=False)
@@ -1731,24 +1896,31 @@ else:
 <div class="card-title">{_safe_title}</div>
 <div class="card-meta">{_safe_url}&nbsp;&nbsp;|&nbsp;&nbsp;{_safe_analyzed_at}&nbsp;&nbsp;|&nbsp;&nbsp;<span class="grade-badge" style="background: {color};">{_safe_grade}</span>{_card_worker_html}</div>
 {fact_html}
-<div style="display: flex; gap: 32px; align-items: center; margin-top: 12px;">
-<div style="flex-shrink: 0; min-width: 130px;">
-{build_gauge_svg(score, grade, color)}</div>
-<div style="flex: 1;">
-<div class="indicator-row">
-<span class="indicator-label">본문 일치도 (45%)</span>
-<div class="indicator-track"><div class="indicator-fill" style="width: {content_s}%; background: {get_indicator_color(content_s)};"></div></div>
-<span class="indicator-value">{content_s:.1f}</span>
+<div style="display: grid; grid-template-columns: 220px 1fr; gap: 28px; margin-top: 18px; align-items: flex-start;">
+<div style="background:#F8FAFC;border-radius:12px;padding:20px 16px;">
+{build_gauge_svg(score, grade, color)}
 </div>
-<div class="indicator-row">
-<span class="indicator-label">자극성 분석 (35%)</span>
-<div class="indicator-track"><div class="indicator-fill" style="width: {provocative_s}%; background: {get_indicator_color(provocative_s)};"></div></div>
-<span class="indicator-value">{provocative_s:.1f}</span>
+<div style="display:flex;flex-direction:column;gap:12px;">
+<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:10px;padding:14px 18px;">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+<div><span style="font-size:14px;font-weight:700;color:#0F172A;">● 본문 일치도</span><span style="margin-left:8px;font-size:11px;color:#64748B;">가중치 45%</span></div>
+<div><span style="font-size:22px;font-weight:800;color:{get_indicator_color(content_s)};">{content_s:.0f}</span><span style="font-size:11px;color:#94A3B8;">/100</span></div>
 </div>
-<div class="indicator-row">
-<span class="indicator-label">출처 신뢰도 (20%)</span>
-<div class="indicator-track"><div class="indicator-fill" style="width: {source_s}%; background: {get_indicator_color(source_s)};"></div></div>
-<span class="indicator-value">{source_s:.1f}</span>
+<div style="height:8px;background:#F1F5F9;border-radius:4px;overflow:hidden;"><div style="height:100%;width:{content_s}%;background:{get_indicator_color(content_s)};"></div></div>
+</div>
+<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:10px;padding:14px 18px;">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+<div><span style="font-size:14px;font-weight:700;color:#0F172A;">● 자극성 분석</span><span style="margin-left:8px;font-size:11px;color:#64748B;">가중치 35%</span></div>
+<div><span style="font-size:22px;font-weight:800;color:{get_indicator_color(provocative_s)};">{provocative_s:.0f}</span><span style="font-size:11px;color:#94A3B8;">/100</span></div>
+</div>
+<div style="height:8px;background:#F1F5F9;border-radius:4px;overflow:hidden;"><div style="height:100%;width:{provocative_s}%;background:{get_indicator_color(provocative_s)};"></div></div>
+</div>
+<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:10px;padding:14px 18px;">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+<div><span style="font-size:14px;font-weight:700;color:#0F172A;">● 출처 신뢰도</span><span style="margin-left:8px;font-size:11px;color:#64748B;">가중치 20%</span></div>
+<div><span style="font-size:22px;font-weight:800;color:{get_indicator_color(source_s)};">{source_s:.0f}</span><span style="font-size:11px;color:#94A3B8;">/100</span></div>
+</div>
+<div style="height:8px;background:#F1F5F9;border-radius:4px;overflow:hidden;"><div style="height:100%;width:{source_s}%;background:{get_indicator_color(source_s)};"></div></div>
 </div>
 </div></div>
 {evidence1}
