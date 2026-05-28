@@ -329,12 +329,16 @@ section[data-testid="stSidebar"] { display: none !important; }
 [data-testid="collapsedControl"] { display: none !important; }
 [data-testid="stToolbar"] { display: none !important; }
 
-/* PPT 슬라이드 2 — 흰 헤더 한 줄 (로고 + 메뉴 + 사용자) — 순수 HTML/CSS */
+/* PPT 슬라이드 2 — 흰 헤더 한 줄 (로고 + 메뉴 + 사용자) — 순수 HTML/CSS
+   sticky로 스크롤해도 항상 상단 고정 */
 .topbar-merged {
     background: #FFFFFF;
     margin: 0 -32px 32px -32px;
     border-bottom: 1px solid #E2E8F0;
     box-shadow: 0 1px 3px rgba(15,23,42,0.03);
+    position: sticky;
+    top: 0;
+    z-index: 999;
 }
 .topbar-content {
     display: flex;
@@ -642,9 +646,72 @@ st.markdown(f"""<div class="topbar-merged">
 </div>""", unsafe_allow_html=True)
 
 # ================================================================
-# [V2 UI] 본문 상단 expander — 분석 설정 · 필터 (이전 사이드바 컨트롤들)
+# 변수 기본값 (module 스코프) — 계정 설정에서 UI로 변경 가능
+# 계정 설정 페이지에 안 들어가도 분석/대시보드 등에서 이 변수들 사용
 # ================================================================
-with st.expander("⚙️ 분석 설정 · 필터", expanded=False):
+PRESETS = {
+    "일반 (기본값)": {"w": (45, 35, 20), "th": (80, 60, 40)},
+    "정치 — 출처 엄격": {"w": (40, 30, 30), "th": (85, 65, 45)},
+    "경제 — 본문 정확성 중시": {"w": (50, 30, 20), "th": (80, 60, 40)},
+    "연예 — 자극성 비중↑": {"w": (35, 45, 20), "th": (75, 55, 35)},
+}
+preset_choice = st.session_state.get("preset_choice", "일반 (기본값)")
+_p_def = PRESETS.get(preset_choice, PRESETS["일반 (기본값)"])
+w_content = st.session_state.get("w_content", _p_def["w"][0])
+w_prov = st.session_state.get("w_prov", _p_def["w"][1])
+w_source = st.session_state.get("w_source", _p_def["w"][2])
+th_reliable = st.session_state.get("th_reliable", _p_def["th"][0])
+th_caution = st.session_state.get("th_caution", _p_def["th"][1])
+th_suspect = st.session_state.get("th_suspect", _p_def["th"][2])
+
+_w_total = max(1, w_content + w_prov + w_source)
+USER_W_CONTENT = w_content / _w_total
+USER_W_PROV = w_prov / _w_total
+USER_W_SOURCE = w_source / _w_total
+USER_TH_RELIABLE = th_reliable
+USER_TH_CAUTION = th_caution
+USER_TH_SUSPECT = th_suspect
+
+user_label = st.session_state.get("user_label", "")
+USER_LABEL = (user_label or "").strip()
+only_mine = st.session_state.get("only_mine", False)
+ONLY_MINE = only_mine and bool(USER_LABEL)
+
+user_extra = st.session_state.get("user_extra", "")
+user_exempt = st.session_state.get("user_exempt", "")
+USER_EXTRA_WORDS = [w.strip() for w in (user_extra or "").split(",") if w.strip()]
+USER_EXEMPT_WORDS = [w.strip() for w in (user_exempt or "").split(",") if w.strip()]
+
+grade_filter = st.session_state.get("grade_filter", "전체")
+date_start = st.session_state.get("date_start", None)
+date_end = st.session_state.get("date_end", None)
+keyword_search = st.session_state.get("keyword_search", "")
+
+def recompute_score(content, prov, source):
+    return round(
+        (content or 0) * USER_W_CONTENT
+        + (prov or 0) * USER_W_PROV
+        + (source or 0) * USER_W_SOURCE,
+        1,
+    )
+
+def recompute_grade(score):
+    if score >= USER_TH_RELIABLE:
+        return "신뢰 가능"
+    elif score >= USER_TH_CAUTION:
+        return "주의 필요"
+    elif score >= USER_TH_SUSPECT:
+        return "의심 기사"
+    else:
+        return "신뢰 낮음"
+
+# ================================================================
+# 분석 설정 · 필터 expander — 계정 설정 페이지에서만 표시
+# (위젯 변경 시 session_state에 자동 저장되어 위 변수에 반영됨)
+# ================================================================
+_show_settings = (page_mode == "⚙️ 계정 설정")
+if _show_settings:
+  with st.expander("⚙️ 분석 설정 · 필터", expanded=True):
     # ================================================================
     # 사이드바 — 페이지 네비게이션 + 필터 + 시스템 상태
     # ================================================================
@@ -833,8 +900,9 @@ with st.expander("⚙️ 분석 설정 · 필터", expanded=False):
     
     
 
-# 시스템 상태/캐시 적중률 (이전 사이드바 하단)
-with st.expander("⚙️ 시스템 상태 · 캐시 적중률", expanded=False):
+# 시스템 상태/캐시 적중률 — 계정 설정 페이지에서만 표시
+if _show_settings:
+  with st.expander("⚙️ 시스템 상태 · 캐시 적중률", expanded=False):
     # ── 사이드바 하단: 시스템 상태 ──
     st.markdown("**⚙️ 시스템 상태**")
     total_count = len(df) if not df.empty else 0
