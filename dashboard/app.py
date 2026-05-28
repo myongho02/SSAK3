@@ -1273,53 +1273,7 @@ if page_mode == "⚙️ 계정 설정":
 
     st.stop()
 
-# ================================================================
-# 분석 프로세스 시각화 — 5단계 가로 스텝
-# ================================================================
-st.markdown("""<div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 16px; padding: 28px 32px; margin-bottom: 32px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
-<p style="font-size: 15px; font-weight: 700; color: #0F1B2D; margin: 0 0 20px 0; padding-bottom: 8px; border-bottom: 2px solid #0D9488; display: inline-block;">분석 프로세스</p>
-<div style="display: flex; align-items: center; justify-content: center; gap: 0; flex-wrap: wrap;">
-<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
-<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0D9488, #14B8A6); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(13,148,136,0.3);">
-<span style="font-size: 24px;">🔗</span>
-</div>
-<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">1. URL 입력</p>
-<p style="font-size: 11px; color: #94A3B8; margin: 0;">뉴스 기사 URL을<br>입력합니다</p>
-</div>
-<div style="color: #0D9488; font-size: 22px; font-weight: 700; flex-shrink: 0; margin: 0 2px;">→</div>
-<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
-<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0D9488, #14B8A6); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(13,148,136,0.3);">
-<span style="font-size: 24px;">📄</span>
-</div>
-<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">2. 기사 크롤링</p>
-<p style="font-size: 11px; color: #94A3B8; margin: 0;">제목·본문·날짜를<br>자동 수집합니다</p>
-</div>
-<div style="color: #0D9488; font-size: 22px; font-weight: 700; flex-shrink: 0; margin: 0 2px;">→</div>
-<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
-<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0D9488, #14B8A6); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(13,148,136,0.3);">
-<span style="font-size: 24px;">🔍</span>
-</div>
-<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">3. 3대 지표 분석</p>
-<p style="font-size: 11px; color: #94A3B8; margin: 0;">키워드·자극성·출처<br>규칙+AI 보조 분석</p>
-</div>
-<div style="color: #0D9488; font-size: 22px; font-weight: 700; flex-shrink: 0; margin: 0 2px;">→</div>
-<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
-<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0D9488, #14B8A6); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(13,148,136,0.3);">
-<span style="font-size: 24px;">📊</span>
-</div>
-<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">4. 종합 점수 산출</p>
-<p style="font-size: 11px; color: #94A3B8; margin: 0;">가중 평균으로<br>신뢰도 점수 계산</p>
-</div>
-<div style="color: #0D9488; font-size: 22px; font-weight: 700; flex-shrink: 0; margin: 0 2px;">→</div>
-<div style="flex: 1; min-width: 120px; text-align: center; padding: 12px 8px;">
-<div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #0F1B2D, #1E3A5F); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px auto; box-shadow: 0 3px 10px rgba(15,27,45,0.3);">
-<span style="font-size: 24px;">✅</span>
-</div>
-<p style="font-size: 13px; font-weight: 700; color: #0F1B2D; margin: 0 0 2px 0;">5. 결과 표시</p>
-<p style="font-size: 11px; color: #94A3B8; margin: 0;">등급·근거와 함께<br>결과를 제공합니다</p>
-</div>
-</div>
-</div>""", unsafe_allow_html=True)
+# (PPT에 없는 '분석 프로세스' 5단계 다이어그램은 제거됨)
 
 # ================================================================
 # 등급 판별 헬퍼 함수
