@@ -329,28 +329,21 @@ section[data-testid="stSidebar"] { display: none !important; }
 [data-testid="collapsedControl"] { display: none !important; }
 [data-testid="stToolbar"] { display: none !important; }
 
-/* PPT 슬라이드 2 — 흰 헤더 한 줄 통합 (로고 + 메뉴 + 사용자) */
+/* PPT 슬라이드 2 — 흰 헤더 한 줄 (로고 + 메뉴 + 사용자) — 순수 HTML/CSS */
 .topbar-merged {
     background: #FFFFFF;
     margin: 0 -32px 32px -32px;
-    padding: 14px 40px;
     border-bottom: 1px solid #E2E8F0;
     box-shadow: 0 1px 3px rgba(15,23,42,0.03);
 }
-/* 한 줄에 모든 요소 세로 가운데 정렬 */
-.topbar-merged [data-testid="stHorizontalBlock"] {
-    align-items: center !important;
-    gap: 8px !important;
+.topbar-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 40px;
+    gap: 24px;
 }
-.topbar-merged [data-testid="stHorizontalBlock"] [data-testid="column"] {
-    display: flex !important;
-    align-items: center !important;
-}
-.topbar-merged [data-testid="stHorizontalBlock"] [data-testid="column"]:last-child {
-    justify-content: flex-end !important;
-}
-
-.topbar-logo { display: flex; align-items: center; gap: 12px; }
+.topbar-logo { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .topbar-logo-icon {
     background: #0D9488; width: 36px; height: 36px;
     border-radius: 8px; display: flex; align-items: center; justify-content: center;
@@ -361,42 +354,43 @@ section[data-testid="stSidebar"] { display: none !important; }
     letter-spacing: -0.3px; line-height: 1.2;
 }
 .topbar-logo-sub { font-size: 11px; color: #94A3B8 !important; line-height: 1.2; }
+
+.topbar-menu {
+    display: flex;
+    gap: 28px;
+    justify-content: center;
+    flex: 1;
+}
+.topbar-menu-link {
+    color: #64748B !important;
+    text-decoration: none !important;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 8px 2px;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+.topbar-menu-link:hover {
+    color: #0D9488 !important;
+    text-decoration: none !important;
+}
+.topbar-menu-link.active {
+    color: #0D9488 !important;
+    font-weight: 700;
+    border-bottom: 2px solid #0D9488;
+}
+
 .topbar-user {
     display: inline-flex; align-items: center; gap: 10px;
     color: #475569 !important; font-size: 13px; font-weight: 500;
+    flex-shrink: 0;
 }
 .topbar-user-avatar {
-    width: 30px; height: 30px; border-radius: 50%;
+    width: 32px; height: 32px; border-radius: 50%;
     background: #0D9488; color: #FFFFFF !important;
     display: flex; align-items: center; justify-content: center;
-    font-size: 12px; font-weight: 700;
-}
-
-/* 헤더 안의 메뉴 버튼 — 텍스트 링크 형태 (박스 X) */
-.topbar-merged .stButton > button {
-    background: transparent !important;
-    color: #64748B !important;
-    border: none !important;
-    border-bottom: 2px solid transparent !important;
-    border-radius: 0 !important;
-    padding: 12px 0 !important;
-    margin: 0 !important;
-    font-size: 14px !important;
-    font-weight: 500 !important;
-    box-shadow: none !important;
-    transition: all 0.15s !important;
-    width: 100% !important;
-}
-.topbar-merged .stButton > button:hover {
-    color: #0D9488 !important;
-    background: transparent !important;
-    box-shadow: none !important;
-}
-.topbar-merged .stButton > button[kind="primary"] {
-    color: #0D9488 !important;
-    border-bottom: 2px solid #0D9488 !important;
-    font-weight: 700 !important;
-    background: transparent !important;
+    font-size: 13px; font-weight: 700;
 }
 /* Streamlit 기본 텍스트 색상 위계 */
 .stApp p, .stApp span, .stApp div { color: #475569; }
@@ -585,53 +579,67 @@ df = load_data()
 # ================================================================
 # [V2 UI] 상단 헤더 메뉴 (사이드바 대체) — 페이지 전환 + 사용자 정보
 # ================================================================
-# PPT 슬라이드 2 스타일 — 흰 헤더 한 줄에 [로고 + 메뉴 + 사용자] 모두 통합
+# PPT 슬라이드 2 — 흰 헤더 한 줄 통합 (로고 + 메뉴 + 사용자) — 순수 HTML
 _u = auth_user_info()
 _username = _u['username'] if _u else 'Guest'
 _initial = (_username[:1] or '?').upper()
 
-_pages_avail = ["🔗 분석하기", "📈 대시보드", "🏎️ 성능 측정"]
-if auth_user_info():
-    _pages_avail += ["⚙️ 계정 설정"]
-_pages_avail += ["🚪 로그아웃"]
-_current = st.session_state.get("page_mode", "🔗 분석하기")
+# URL query parameter로 페이지 전환 — Streamlit columns/button 없이 100% HTML로 한 줄 렌더링
+_PAGE_DEFS = [
+    ("analyze", "🔗 분석하기"),
+    ("dashboard", "📈 대시보드"),
+    ("perf", "🏎️ 성능 측정"),
+    ("settings", "⚙️ 계정 설정"),
+    ("logout", "🚪 로그아웃"),
+]
 
-# 흰 헤더 행 시작
-st.markdown('<div class="topbar-merged">', unsafe_allow_html=True)
+# query에서 현재 페이지 읽기
+_qp_obj = st.query_params if hasattr(st, "query_params") else {}
+_cur_page_key = _qp_obj.get("page", "analyze")
+if isinstance(_cur_page_key, list):
+    _cur_page_key = _cur_page_key[0] if _cur_page_key else "analyze"
 
-# 컬럼: [로고(2.5), 메뉴1, 메뉴2, 메뉴3, 메뉴4, 메뉴5, 사용자(2)]
-_col_layout = [2.5] + [1] * len(_pages_avail) + [2]
-_cols = st.columns(_col_layout)
+# 로그아웃 처리
+if _cur_page_key == "logout":
+    auth_logout()
+    try:
+        if "page" in st.query_params:
+            del st.query_params["page"]
+    except Exception:
+        pass
+    st.rerun()
 
-# 1) 로고
-with _cols[0]:
-    st.markdown(f"""<div class="topbar-logo">
+# session_state 매핑
+_PAGE_KEY_TO_MODE = {k: v for k, v in _PAGE_DEFS}
+page_mode = _PAGE_KEY_TO_MODE.get(_cur_page_key, "🔗 분석하기")
+st.session_state["page_mode"] = page_mode
+
+# 토큰 query는 유지 (새로고침 시 세션)
+_t_val = st.query_params.get("t", "") if hasattr(st, "query_params") else ""
+if isinstance(_t_val, list):
+    _t_val = _t_val[0] if _t_val else ""
+_t_suffix = f"&t={_t_val}" if _t_val else ""
+
+# 메뉴 HTML
+_menu_html = "".join(
+    f'<a href="?page={_k}{_t_suffix}" class="topbar-menu-link{" active" if _k == _cur_page_key else ""}" target="_self">{_label}</a>'
+    for _k, _label in _PAGE_DEFS
+)
+
+# 헤더 통째 HTML (한 줄)
+st.markdown(f"""<div class="topbar-merged">
+<div class="topbar-content">
+<div class="topbar-logo">
 <div class="topbar-logo-icon">📰</div>
 <div><div class="topbar-logo-text">SSAK3</div><div class="topbar-logo-sub">News Credibility Analyzer</div></div>
-</div>""", unsafe_allow_html=True)
-
-# 2) 메뉴 버튼들
-for _i, _p in enumerate(_pages_avail):
-    with _cols[_i + 1]:
-        _is_active = (_p == _current)
-        if st.button(_p, key=f"_menu_{_p}", use_container_width=True,
-                     type="primary" if _is_active else "secondary"):
-            if _p == "🚪 로그아웃":
-                auth_logout()
-                st.rerun()
-            else:
-                st.session_state["page_mode"] = _p
-                st.rerun()
-
-# 3) 우측 사용자
-with _cols[-1]:
-    st.markdown(f"""<div class="topbar-user">
+</div>
+<div class="topbar-menu">{_menu_html}</div>
+<div class="topbar-user">
 <span>{_username}</span>
 <div class="topbar-user-avatar">{_initial}</div>
+</div>
+</div>
 </div>""", unsafe_allow_html=True)
-
-st.markdown('</div>', unsafe_allow_html=True)
-page_mode = st.session_state.get("page_mode", "🔗 분석하기")
 
 # ================================================================
 # [V2 UI] 본문 상단 expander — 분석 설정 · 필터 (이전 사이드바 컨트롤들)
