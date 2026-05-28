@@ -979,7 +979,10 @@ def get_jobs_summary():
 
 @app.route('/results', methods=['GET'])
 def get_results():
-    """본인 분석 결과만 조회 (Phase G — user_id 격리)."""
+    """분석 결과 조회.
+    [학교 발표 시연용 정책] 인증된 사용자는 본인 분석 + 공용 시연 데이터(user_id IS NULL)를 함께 본다.
+    → demo_seed.py가 anonymous로 시드해도 로그인 사용자 화면에 노출됨.
+    """
     user_id = auth_user(request)
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -991,7 +994,9 @@ def get_results():
             )
         else:
             cursor.execute(
-                "SELECT * FROM analysis_results WHERE user_id = ? ORDER BY analyzed_at DESC",
+                "SELECT * FROM analysis_results "
+                "WHERE user_id = ? OR user_id IS NULL "
+                "ORDER BY analyzed_at DESC",
                 (user_id,)
             )
         rows = [dict(row) for row in cursor.fetchall()]
