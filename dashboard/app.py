@@ -302,11 +302,84 @@ if not auth_user_info():
 # Markdown은 4칸 이상 들여쓴 텍스트를 코드 블록으로 인식하기 때문.
 # ================================================================
 st.markdown("""<style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;800&display=swap');
 html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: hidden;}
+
+/* ───────── [PPT 디자인 동일화] 전체 페이지 톤 — 옅은 회색 배경 + 흰색 카드 ───────── */
+.stApp { background: #F8FAFC !important; }
+.main .block-container {
+    background: #F8FAFC !important;
+    padding-top: 32px !important;
+    padding-bottom: 48px !important;
+    max-width: 1280px !important;
+}
+/* Streamlit 기본 텍스트 색상 위계 */
+.stApp p, .stApp span, .stApp div { color: #475569; }
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 { color: #0F172A; }
+.stApp h5 { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+
+/* 탭 스타일 — PPT의 단일/대량 탭처럼 */
+[data-testid="stTabs"] [role="tablist"] {
+    background: #FFFFFF;
+    border-radius: 12px;
+    padding: 6px;
+    border: 1px solid #E2E8F0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    gap: 4px;
+}
+[data-testid="stTabs"] [role="tab"] {
+    background: transparent !important;
+    color: #64748B !important;
+    border-radius: 8px !important;
+    padding: 10px 18px !important;
+    font-weight: 600 !important;
+    border: none !important;
+}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+    background: #0D9488 !important;
+    color: #FFFFFF !important;
+}
+
+/* 폼 버튼 — PPT의 분석 시작 버튼 톤 */
+.stButton > button, .stFormSubmitButton > button {
+    background: #0D9488 !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    padding: 10px 22px !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 8px rgba(13,148,136,0.25) !important;
+    transition: all 0.15s !important;
+}
+.stButton > button:hover, .stFormSubmitButton > button:hover {
+    background: #0F766E !important;
+    box-shadow: 0 4px 12px rgba(13,148,136,0.35) !important;
+}
+
+/* 입력창 — 큰 둥근 모서리 + 패딩 */
+.stTextInput input, .stTextArea textarea {
+    background: #F1F5F9 !important;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 10px !important;
+    padding: 12px 16px !important;
+    font-size: 14px !important;
+}
+.stTextInput input:focus, .stTextArea textarea:focus {
+    border-color: #0D9488 !important;
+    box-shadow: 0 0 0 3px rgba(13,148,136,0.15) !important;
+}
+
+/* metric은 PPT 카드처럼 */
+[data-testid="stMetric"] {
+    background: #FFFFFF;
+    padding: 16px 20px;
+    border-radius: 12px;
+    border: 1px solid #E2E8F0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
 /* [사이드바] 강제 펼침 — 어떤 상태로 들어와도 항상 보이게 (시연 안정성).
    ※ 이전 시도에서 접기 버튼 selector를 잘못 잡아 사이드바가 통째로 사라지는 문제 발생 → 원복. */
 section[data-testid="stSidebar"] {
@@ -343,23 +416,24 @@ section[data-testid="stSidebar"] > div {
     color: #0D9488 !important; font-weight: 700 !important;
 }
 [data-testid="stForm"] {
-    background: #F8FAFC;
+    background: #FFFFFF !important;
     border: 1px solid #E2E8F0 !important;
     border-radius: 16px !important;
     padding: 28px 32px !important;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    box-shadow: 0 4px 16px rgba(15,23,42,0.06) !important;
     margin-bottom: 24px;
 }
 .summary-card {
     border-radius: 16px; padding: 24px; text-align: center;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.06); border: 1px solid #E2E8F0;
+    box-shadow: 0 4px 16px rgba(15,23,42,0.06); border: 1px solid #E2E8F0;
+    background: #FFFFFF;
 }
 .summary-card .icon { font-size: 32px; margin-bottom: 4px; }
-.summary-card .value { font-size: 32px; font-weight: 700; margin: 4px 0; }
-.summary-card .label { font-size: 14px; color: #64748B; font-weight: 400; }
+.summary-card .value { font-size: 32px; font-weight: 800; color: #0F172A; margin: 4px 0; }
+.summary-card .label { font-size: 13px; color: #64748B; font-weight: 400; }
 .article-card {
     background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 16px;
-    padding: 0; margin-bottom: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    padding: 0; margin-bottom: 20px; box-shadow: 0 4px 16px rgba(15,23,42,0.06);
     overflow: hidden; display: flex;
 }
 .article-card .grade-bar { width: 6px; flex-shrink: 0; }
@@ -404,13 +478,13 @@ section[data-testid="stSidebar"] > div {
 }
 .evidence-section {
     background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px;
-    padding: 14px 18px; margin-top: 12px;
+    padding: 14px 18px; margin-top: 10px;
 }
 .evidence-title {
-    font-size: 13px; font-weight: 700; color: #0F1B2D; margin-bottom: 8px;
+    font-size: 13px; font-weight: 700; color: #0F172A; margin-bottom: 8px;
 }
 .evidence-row {
-    font-size: 12px; color: #475569; line-height: 1.8;
+    font-size: 12px; color: #475569; line-height: 1.7;
 }
 .kw-tag {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
